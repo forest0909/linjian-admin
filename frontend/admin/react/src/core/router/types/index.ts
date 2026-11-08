@@ -200,6 +200,8 @@ export interface GenerateMenuAndRoutesOptions {
     routes: AppRouteObject[];
     autoInjectRedirect?: boolean;
     autoSort?: boolean;
+    /** 未登录时构建路由表传入：后端模式下 '/' 渲染它，而不是跳首个菜单或个人中心 */
+    guestRootElement?: React.ReactNode;
 }
 
 

@@ -100,7 +100,8 @@ export const createAccessibleRouter = async (
     routes = [
       {
         path: '/',
-        element: createElement(Navigate, { to: homeTarget, replace: true }),
+        element:
+          options.guestRootElement ?? createElement(Navigate, { to: homeTarget, replace: true }),
         meta: { title: 'routes:home', hideInMenu: true, hideInTab: true },
       },
       ...routes,
