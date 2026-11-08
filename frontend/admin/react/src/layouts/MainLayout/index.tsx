@@ -1,11 +1,15 @@
 import { useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import { Outlet, useLocation, useMatches } from 'react-router-dom';
-import { ConfigProvider } from 'antd';
+import { ConfigProvider, FloatButton } from 'antd';
+import { SettingOutlined } from '@ant-design/icons';
+import { useTranslation } from 'react-i18next';
 
 // 内部组件
 import HeaderContent from './components/HeaderContent';
+import MenuRail from './components/MenuRail';
 import SiderMenu from './components/SiderMenu';
+import TopNav from './components/TopNav';
 import TabsBar from './components/TabsBar';
 import AppFooter from './components/Footer';
 import { LockScreen } from './components/LockScreen';
@@ -14,6 +18,7 @@ import { PageContainer } from '@/layouts/components/PageContainer';
 // Hooks
 import { useMenuData } from './hooks/useMenuData';
 import { useLayoutState } from './hooks/useLayoutState';
+import { findActiveRootMenu, getLayoutShape } from './utils/layoutMenu';
 
 // Stores & Preferences
 import { useUserStore, useAuthStore, usePageRefreshStore, useLockStore } from '@/stores';
@@ -45,6 +50,7 @@ export const MainLayout = ({ routes: dynamicRoutes }: MainLayoutProps) => {
   const location = useLocation();
   const rawMatches = useMatches();
   const matches = rawMatches as LayoutRouteMatch[];
+  const { t } = useTranslation('common');
 
   // Stores
   const { userInfo } = useUserStore();
@@ -201,7 +207,15 @@ export const MainLayout = ({ routes: dynamicRoutes }: MainLayoutProps) => {
     setOpenKeys(openKeys);
   }, [location.pathname, menuData, setOpenKeys]);
 
-  // 顶栏右侧
+  // 布局模式：决定外框里显示哪些部分
+  const shape = getLayoutShape(preferences.app.layout, isMobile);
+  const activeRootMenu = useMemo(
+    () => (shape.siderSubMenuOnly ? findActiveRootMenu(menuData, location.pathname) : undefined),
+    [shape.siderSubMenuOnly, menuData, location.pathname],
+  );
+  const siderMenuData = shape.siderSubMenuOnly ? (activeRootMenu?.children ?? []) : menuData;
+
+  // 顶栏
   const headerContentRender = useCallback(() => {
     const toggleTheme = (event?: ReactMouseEvent<HTMLElement>) => {
       const nextMode = isDark ? 'light' : 'dark';
@@ -250,9 +264,20 @@ export const MainLayout = ({ routes: dynamicRoutes }: MainLayoutProps) => {
           refresh: preferences.widget?.refresh ?? true,
           sidebarToggle: preferences.widget?.sidebarToggle ?? true,
         }}
+        leftContent={
+          shape.fullWidthHeader ? (
+            <TopNav
+              menuData={menuData}
+              isDark={isDark}
+              selectedKeys={shape.headerRootMenu && activeRootMenu?.path ? [activeRootMenu.path] : selectedKeys}
+              rootOnly={shape.headerRootMenu}
+            />
+          ) : undefined
+        }
+        hideSidebarToggle={shape.headerFullMenu}
       />
     );
-  }, [userInfo, sidebarHidden, isFullscreen, logout, isDark, setPreferences, triggerPageRefresh, preferences.widget, menuData]);
+  }, [userInfo, sidebarHidden, isFullscreen, logout, isDark, setPreferences, triggerPageRefresh, preferences.widget, menuData, shape.fullWidthHeader, shape.headerRootMenu, shape.headerFullMenu, activeRootMenu, selectedKeys]);
 
   // 主题切换
   useCallback(() => {
@@ -262,109 +287,142 @@ export const MainLayout = ({ routes: dynamicRoutes }: MainLayoutProps) => {
       },
     });
   }, [isDark, setPreferences]);
+
+  const headerBar = (
+    <div
+      style={{
+        height: 50,
+        backgroundColor: 'var(--app-bg-nav, var(--ant-color-bg-container))',
+        borderBottom: '1px solid var(--ant-color-border)',
+        padding: '0 12px',
+        flexShrink: 0,
+        zIndex: 100,
+      }}
+    >
+      {headerContentRender()}
+    </div>
+  );
+
+  // 外框的层级在所有布局下都不变，只用条件渲染开关各部分：
+  // 这样切换布局时内容区不会重新挂载，页面里的表单、查询条件不会丢。
   return (
     <ConfigProvider theme={themeConfig}>
       <div
         style={{
           height: '100vh',
           display: 'flex',
+          flexDirection: 'column',
           background: 'var(--ant-color-bg-layout)',
         }}
       >
-        {/* ===== 左侧：侧边栏 ===== */}
-        <SiderMenu
-          menuData={menuData}
-          isMobile={isMobile}
-          isDark={isDark}
-          openKeys={openKeys}
-          selectedKeys={selectedKeys}
-          onOpenChange={setOpenKeys}
-        />
+        {/* ===== 通栏顶栏（水平、混合菜单） ===== */}
+        {shape.fullWidthHeader && headerBar}
 
-        {/* ===== 右侧：主内容区 ===== */}
-        <div
-          style={{
-            flex: 1,
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden',
-          }}
-        >
-          {/* 顶部栏 */}
-          <div
-            style={{
-              height: 50,
-              backgroundColor: 'var(--app-bg-nav, var(--ant-color-bg-container))',
-              borderBottom: '1px solid var(--ant-color-border)',
-              padding: '0 12px',
-              flexShrink: 0,
-              zIndex: 100,
-            }}
-          >
-            {headerContentRender()}
-          </div>
+        <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+          {/* ===== 一级菜单图标栏（双列菜单） ===== */}
+          {shape.menuRail && <MenuRail menuData={menuData} activePath={activeRootMenu?.path} />}
 
-          {/* 标签栏 */}
-          <TabsBar />
+          {/* 侧栏自动展开时是绝对定位：这一层给它定位基准，不压住图标栏，高度也不把顶栏算进去 */}
+          <div style={{ flex: 1, minWidth: 0, display: 'flex', position: 'relative' }}>
+            {/* ===== 左侧：侧边栏 ===== */}
+            {shape.sider && (!shape.siderSubMenuOnly || siderMenuData.length > 0) && (
+              <SiderMenu
+                menuData={siderMenuData}
+                isMobile={isMobile}
+                isDark={isDark}
+                openKeys={openKeys}
+                selectedKeys={selectedKeys}
+                onOpenChange={setOpenKeys}
+                showBrand={!shape.siderSubMenuOnly}
+              />
+            )}
 
-          {/* 内容区 */}
-          <div
-            style={{
-              flex: 1,
-              overflow: 'hidden', // 禁止外层滚动，让内容区域自己管理滚动
-              backgroundColor: 'var(--ant-color-bg-layout)',
-              // padding: '8px', // 移除 padding，让内容占满整个区域
-              display: 'flex',
-              flexDirection: 'column',
-            }}
-          >
-            <PageContainer
-              ghost={true}
-              route={{
-                meta: {
-                  title: matches.at(-1)?.handle?.title || '',
-                  icon: undefined, // 明确禁止显示图标
-                },
-              }}
-              breadcrumb={false} // 禁用面包屑（顶部栏已有）
-              header={false}
-              contentPadding={false}
+            {/* ===== 右侧：主内容区 ===== */}
+            <div
               style={{
-                flex: 1, // 让 PageContainer 占满父容器
+                flex: 1,
+                minWidth: 0,
                 display: 'flex',
                 flexDirection: 'column',
-                minHeight: 0, // 防止 flex 子项溢出
-                padding: '0',
-                background: 'transparent',
+                overflow: 'hidden',
               }}
             >
-              {/* key 沿用 refreshTrigger：点刷新时整棵子树重建。外层 div 承担两件事——
-                  ① 保住原来的 flex 高度链（列表页表格靠 flex:1 + min-height:0 撑满，
-                     直接给 Outlet 套动画会把这条链压断）；
-                  ② 承载路由入场动效。此前这里是裸 <Outlet/>，两态实测内容区
-                     transition 为 all/0s、切页 opacity 恒 1 ⇒ 页面硬切，
-                     而 preferences.transition.{enable,name} 这个开关在路由层从未被消费
-                     （只有错误页 Fallback 读它），选动画方案时 UI 上会显示"已生效"的假象。
-                  时长与位移在 global.css 的 .page-transition。 */}
-              <div
-                key={refreshTrigger}
-                className={[
-                  'page-transition',
-                  `transition-${preferences.transition.name}`,
-                  preferences.transition.enable ? '' : 'transition-disabled',
-                ]
-                  .filter(Boolean)
-                  .join(' ')}
-              >
-                <Outlet />
-              </div>
-            </PageContainer>
-          </div>
+              {/* 顶部栏 */}
+              {!shape.fullWidthHeader && !shape.contentOnly && headerBar}
 
-          {/* 页脚 */}
-          {preferences.footer.enable && <AppFooter />}
+              {/* 标签栏 */}
+              {!shape.contentOnly && <TabsBar />}
+
+              {/* 内容区 */}
+              <div
+                style={{
+                  flex: 1,
+                  overflow: 'hidden', // 禁止外层滚动，让内容区域自己管理滚动
+                  backgroundColor: 'var(--ant-color-bg-layout)',
+                  // padding: '8px', // 移除 padding，让内容占满整个区域
+                  display: 'flex',
+                  flexDirection: 'column',
+                }}
+              >
+                <PageContainer
+                  ghost={true}
+                  route={{
+                    meta: {
+                      title: matches.at(-1)?.handle?.title || '',
+                      icon: undefined, // 明确禁止显示图标
+                    },
+                  }}
+                  breadcrumb={false} // 禁用面包屑（顶部栏已有）
+                  header={false}
+                  contentPadding={false}
+                  style={{
+                    flex: 1, // 让 PageContainer 占满父容器
+                    display: 'flex',
+                    flexDirection: 'column',
+                    minHeight: 0, // 防止 flex 子项溢出
+                    padding: '0',
+                    background: 'transparent',
+                  }}
+                >
+                  {/* key 沿用 refreshTrigger：点刷新时整棵子树重建。外层 div 承担两件事——
+                      ① 保住原来的 flex 高度链（列表页表格靠 flex:1 + min-height:0 撑满，
+                         直接给 Outlet 套动画会把这条链压断）；
+                      ② 承载路由入场动效。此前这里是裸 <Outlet/>，两态实测内容区
+                         transition 为 all/0s、切页 opacity 恒 1 ⇒ 页面硬切，
+                         而 preferences.transition.{enable,name} 这个开关在路由层从未被消费
+                         （只有错误页 Fallback 读它），选动画方案时 UI 上会显示"已生效"的假象。
+                      时长与位移在 global.css 的 .page-transition。 */}
+                  <div
+                    key={refreshTrigger}
+                    className={[
+                      'page-transition',
+                      `transition-${preferences.transition.name}`,
+                      preferences.transition.enable ? '' : 'transition-disabled',
+                    ]
+                      .filter(Boolean)
+                      .join(' ')}
+                  >
+                    <Outlet />
+                  </div>
+                </PageContainer>
+              </div>
+
+              {/* 页脚 */}
+              {!shape.contentOnly && preferences.footer.enable && <AppFooter />}
+            </div>
+          </div>
         </div>
       </div>
+
+      {/* 内容全屏时没有顶栏，留一个入口打开设置，否则切过去就回不来了 */}
+      {shape.contentOnly && (
+        <FloatButton
+          icon={<SettingOutlined />}
+          tooltip={t('header.settings')}
+          aria-label={t('header.settings')}
+          onClick={() => setSettingsOpen(true)}
+        />
+      )}
 
       {/* 设置面板 */}
       <PreferencesPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
