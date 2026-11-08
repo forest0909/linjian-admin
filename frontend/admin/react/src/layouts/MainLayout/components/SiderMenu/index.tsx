@@ -1,10 +1,9 @@
-import { useMemo, useCallback, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Menu } from 'antd';
 import { useNavigate } from 'react-router-dom';
-import { useTranslation } from 'react-i18next';
 
 import { usePreferencesStore } from '@/core/preferences/store';
-import { getIconFromName } from '../../utils/iconResolver';
+import { useMenuItems } from '../../hooks/useMenuItems';
 import ControlPanel from './ControlPanel';
 import './SiderMenu.style.less';
 
@@ -15,6 +14,8 @@ interface SiderMenuProps {
   openKeys: string[];
   selectedKeys: string[];
   onOpenChange: (keys: string[]) => void;
+  /** 混合菜单、双列菜单的品牌区在顶栏或图标栏，侧栏不再重复 */
+  showBrand?: boolean;
 }
 
 export const Index = ({
@@ -24,10 +25,9 @@ export const Index = ({
   openKeys,
   selectedKeys,
   onOpenChange,
+  showBrand = true,
 }: SiderMenuProps) => {
   const navigate = useNavigate();
-  const { i18n, t } = useTranslation();
-  const { t: tRoutes } = useTranslation('routes');
 
   const preferences = usePreferencesStore((state) => state.preferences);
   const setPreferences = usePreferencesStore((state) => state.setPreferences);
@@ -53,37 +53,7 @@ export const Index = ({
   const [isHovering, setIsHovering] = useState(false);
 
   // 转换菜单数据为 Ant Design Menu items 格式
-  const menuItems = useMemo(() => {
-    /**
-     * 翻译菜单标题
-     * @param label - 可能是 i18n key 或普通文本
-     * @returns 翻译后的文本
-     */
-    const translateLabel = (label: string | undefined): string => {
-      if (!label) return '';
-      // 处理 'menu:xxx' 或 'routes:xxx' 前缀的 i18n key
-      if (label.startsWith('menu:') || label.startsWith('routes:')) {
-        const keyName = label.includes(':') ? label.substring(label.indexOf(':') + 1) : label;
-        return tRoutes(keyName, { defaultValue: label });
-      }
-      // 否则直接尝试翻译（可能已经是简化的 key）
-      const commonHit = t(label, label);
-      if (commonHit !== label) return commonHit;
-      // 后端菜单 meta.title 无前缀、用 vue 端种子键位（menu.* / page.*），
-      // 按 routes 命名空间的嵌套种子键兜底（routes.json 的 menu/page 段）
-      return tRoutes(label, { defaultValue: label });
-    };
-
-    const transformItem = (items: any[]): any[] => {
-      return items.map((item) => ({
-        key: item.path || item.key,
-        icon: getIconFromName(item.icon),
-        label: translateLabel(item.name || item.label), // 翻译标题
-        children: item.children ? transformItem(item.children) : undefined,
-      }));
-    };
-    return transformItem(menuData);
-  }, [menuData, t, i18n.language]); // 添加 i18n.language 依赖，语言切换时重新翻译
+  const menuItems = useMenuItems(menuData);
 
   // 菜单点击
   const handleMenuClick = useCallback(
@@ -170,49 +140,51 @@ export const Index = ({
       onMouseLeave={handleMouseLeave}
     >
       {/* Logo 区域 */}
-      <div
-        style={{
-          height: 56,
-          display: 'flex',
-          alignItems: 'center',
-          // 折叠时把左右内距收到 8px（48 - 32 图标 = 16），图标正好落在轨道正中；
-          // 这条 padding 与侧栏 width 走同一条 240ms 曲线，否则图标会瞬移 8px
-          padding: titleStashed ? '0 8px' : '0 16px',
-          gap: 8,
-          cursor: 'pointer',
-          flexShrink: 0,
-          overflow: 'hidden',
-          transition: siderPaddingMotion,
-        }}
-        onClick={() => navigate('/')}
-      >
-        {preferences.logo.enable && (
-          <img
-            src={preferences.logo.source}
-            alt="logo"
-            style={{ height: 32, width: 32, flexShrink: 0 }}
-          />
-        )}
-        {preferences.app.dynamicTitle && (
-          // 标题不随折叠瞬时卸载（那会让站名在面板还有 220px 宽时一帧消失，正是"生硬"的来源之一）：
-          // 常驻，靠 flex 收缩 + 同档淡出与侧栏一起走完这条时钟
-          <span
-            style={{
-              fontWeight: 700,
-              fontSize: 16,
-              color: 'var(--ant-color-text)',
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              minWidth: 0,
-              opacity: titleStashed ? 0 : 1,
-              transition: siderFadeMotion,
-            }}
-          >
-            {preferences.app.name}
-          </span>
-        )}
-      </div>
+      {showBrand && (
+        <div
+          style={{
+            height: 56,
+            display: 'flex',
+            alignItems: 'center',
+            // 折叠时把左右内距收到 8px（48 - 32 图标 = 16），图标正好落在轨道正中；
+            // 这条 padding 与侧栏 width 走同一条 240ms 曲线，否则图标会瞬移 8px
+            padding: titleStashed ? '0 8px' : '0 16px',
+            gap: 8,
+            cursor: 'pointer',
+            flexShrink: 0,
+            overflow: 'hidden',
+            transition: siderPaddingMotion,
+          }}
+          onClick={() => navigate('/')}
+        >
+          {preferences.logo.enable && (
+            <img
+              src={preferences.logo.source}
+              alt="logo"
+              style={{ height: 32, width: 32, flexShrink: 0 }}
+            />
+          )}
+          {preferences.app.dynamicTitle && (
+            // 标题不随折叠瞬时卸载（那会让站名在面板还有 220px 宽时一帧消失，正是"生硬"的来源之一）：
+            // 常驻，靠 flex 收缩 + 同档淡出与侧栏一起走完这条时钟
+            <span
+              style={{
+                fontWeight: 700,
+                fontSize: 16,
+                color: 'var(--ant-color-text)',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                minWidth: 0,
+                opacity: titleStashed ? 0 : 1,
+                transition: siderFadeMotion,
+              }}
+            >
+              {preferences.app.name}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* 菜单树形列表 */}
       <div style={{ flex: 1, overflow: 'hidden' }}>

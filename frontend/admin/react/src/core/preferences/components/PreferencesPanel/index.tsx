@@ -75,6 +75,8 @@ export const PreferencesPanel: React.FC<PreferencesPanelProps> = ({ open, onClos
       open={open}
       onClose={onClose}
       closable={false}
+      // 不加遮罩：改设置时要能同时看到页面变化
+      mask={false}
       className="preferences-drawer"
       footer={
         <div className="drawer-footer">

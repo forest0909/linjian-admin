@@ -231,6 +231,10 @@ interface HeaderContentProps {
     refresh: boolean;
     sidebarToggle: boolean;
   };
+  /** 水平、混合菜单布局传入品牌区和菜单，替代面包屑 */
+  leftContent?: React.ReactNode;
+  /** 水平布局没有侧栏，不显示侧栏开关 */
+  hideSidebarToggle?: boolean;
 }
 
 export const HeaderContent = ({
@@ -246,6 +250,8 @@ export const HeaderContent = ({
   onOpenSettings,
   menuData,
   widgetConfig,
+  leftContent,
+  hideSidebarToggle = false,
 }: HeaderContentProps) => {
   const { t } = useI18n('common');
   const { t: tRoutes, i18n } = useTranslation('routes'); // 用于路由翻译（路由标题走 routes 命名空间，含后端菜单种子键 menu.*/page.*）
@@ -803,7 +809,7 @@ export const HeaderContent = ({
       {/* ========== 左侧区域：折叠按钮 + 刷新 + 面包屑 ========== */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 1, minWidth: 0 }}>
         {/* 隐藏/显示侧边栏 */}
-        {widgetConfig.sidebarToggle && (
+        {!hideSidebarToggle && widgetConfig.sidebarToggle && (
           <Tooltip title={collapsed ? t('header.expandSidebar') : t('header.collapseSidebar')}>
             <Button
               type="text"
@@ -814,6 +820,8 @@ export const HeaderContent = ({
             />
           </Tooltip>
         )}
+
+        {leftContent}
 
         {/* 刷新按钮 */}
         {widgetConfig.refresh && (
@@ -829,17 +837,19 @@ export const HeaderContent = ({
         )}
 
         {/* 分割线 */}
-        <div
-          style={{
-            width: 1,
-            height: 20,
-            backgroundColor: 'var(--ant-color-bg-container)',
-            margin: '0 8px',
-          }}
-        />
+        {!leftContent && (
+          <div
+            style={{
+              width: 1,
+              height: 20,
+              backgroundColor: 'var(--ant-color-bg-container)',
+              margin: '0 8px',
+            }}
+          />
+        )}
 
         {/* 面包屑 */}
-        <Breadcrumb
+        {!leftContent && <Breadcrumb
           separator={breadcrumbStyleType === 'background' ? '/' : '>'}
           style={
             breadcrumbStyleType === 'background'
@@ -901,7 +911,7 @@ export const HeaderContent = ({
               </span>
             ),
           }))}
-        />
+        />}
       </div>
 
       {/* ========== 右侧区域：搜索 + 设置 + 主题 + 语言 + 全屏 + 通知 + 头像 ========== */}
