@@ -467,6 +467,8 @@ func TestRepoUpdateRoundTrip(t *testing.T) {
 				return err
 			},
 			skip: map[string]string{"task_options": "嵌套消息，整体存 JSON 列"},
+			// task_payload 是 jsonb 列，写入前校验必须是合法 JSON。
+			values: func() map[string]any { return map[string]any{"task_payload": `{"k":1}`} },
 		},
 		{
 			name: "Config",

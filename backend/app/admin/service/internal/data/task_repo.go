@@ -2,6 +2,8 @@ package data
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"time"
 
 	"entgo.io/ent/dialect/sql"
@@ -145,11 +147,16 @@ func (r *TaskRepo) Create(ctx context.Context, req *taskV1.CreateTaskRequest) (*
 		return nil, taskV1.ErrorBadRequest("invalid parameter")
 	}
 
+	payload, err := normalizeTaskPayload(req.Data.TaskPayload)
+	if err != nil {
+		return nil, err
+	}
+
 	builder := r.entClient.Client().Task.Create().
 		SetNillableTenantID(req.Data.TenantId).
 		SetNillableType(r.typeConverter.ToEntity(req.Data.Type)).
 		SetNillableTypeName(req.Data.TypeName).
-		SetNillableTaskPayload(req.Data.TaskPayload).
+		SetNillableTaskPayload(payload).
 		SetNillableCronSpec(req.Data.CronSpec).
 		SetNillableEnable(req.Data.Enable).
 		SetNillableRemark(req.Data.Remark).
@@ -201,18 +208,28 @@ func (r *TaskRepo) Update(ctx context.Context, req *taskV1.UpdateTaskRequest) (*
 		}
 	}
 
+	payload, err := normalizeTaskPayload(req.Data.TaskPayload)
+	if err != nil {
+		return nil, err
+	}
+
 	builder := r.entClient.Client().Task.UpdateOneID(req.GetId())
 	result, err := r.repository.UpdateOne(ctx, builder, req.Data, req.GetUpdateMask(),
 		func(dto *taskV1.Task) {
 			builder.
 				SetNillableType(r.typeConverter.ToEntity(req.Data.Type)).
 				SetNillableTypeName(req.Data.TypeName).
-				SetNillableTaskPayload(req.Data.TaskPayload).
+				SetNillableTaskPayload(payload).
 				SetNillableCronSpec(req.Data.CronSpec).
 				SetNillableEnable(req.Data.Enable).
 				SetNillableRemark(req.Data.Remark).
 				SetNillableUpdatedBy(req.Data.UpdatedBy).
 				SetUpdatedAt(time.Now())
+
+			// 提交了空载荷：清成 NULL（页面把已有载荷清空）。
+			if req.Data.TaskPayload != nil && payload == nil {
+				builder.ClearTaskPayload()
+			}
 
 			if req.Data.TaskOptions != nil {
 				builder.SetTaskOptions(req.Data.TaskOptions)
@@ -242,4 +259,16 @@ func (r *TaskRepo) Delete(ctx context.Context, req *taskV1.DeleteTaskRequest) er
 	}
 
 	return nil
+}
+
+// normalizeTaskPayload 规整任务载荷：task_payload 是 jsonb 列，空串不是合法 JSON，
+// 直接写库会 500。nil 或空白视为没有载荷（返回 nil，存 NULL）；非空但不是合法 JSON 返回 400。
+func normalizeTaskPayload(p *string) (*string, error) {
+	if p == nil || strings.TrimSpace(*p) == "" {
+		return nil, nil
+	}
+	if !json.Valid([]byte(*p)) {
+		return nil, taskV1.ErrorBadRequest("task payload must be valid JSON")
+	}
+	return p, nil
 }
