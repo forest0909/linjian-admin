@@ -39,6 +39,7 @@ func (c *MenuPermissionConverter) ConvertCode(path, title string, typ permission
 		paths = paths[1:]
 	}
 
+	hasParam := false
 	newPaths := paths[:0]
 	for _, p := range paths {
 		p = strings.TrimSpace(p)
@@ -47,11 +48,18 @@ func (c *MenuPermissionConverter) ConvertCode(path, title string, typ permission
 			continue
 		}
 		if strings.HasPrefix(p, ":") {
+			hasParam = true
 			continue
 		}
 		newPaths = append(newPaths, p)
 	}
 	paths = newPaths
+
+	// 带参数的页面是详情页，丢掉参数后不能和同名的列表页撞码（/map/reservoir/:id 和
+	// /config/reservoirs）。撞码时同步只保留首个，另一个页面就没有权限点了。
+	if hasParam && len(paths) > 0 && paths[len(paths)-1] != "detail" {
+		paths = append(paths, "detail")
+	}
 
 	// 将路径段用 ':' 连接，作为权限主体
 	permBase := strings.Join(paths, ":")

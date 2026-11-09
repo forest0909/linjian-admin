@@ -147,14 +147,19 @@ async function routeToMenu(
 
   // 顶层目录节点补绝对路径，与 DefaultMenus 的 "/system" + 相对子路径约定一致
   const path = depth === 0 && !route.path.startsWith('/') ? `/${route.path}` : route.path;
-  const component =
-    depth === 0 ? 'BasicLayout' : await resolveComponentPath(route.element);
+  // 有 element 的是页面（一级单页也是），没有的是目录；只有一级目录挂布局
+  const isPage = Boolean(route.element);
+  const component = isPage
+    ? await resolveComponentPath(route.element)
+    : depth === 0
+      ? 'BasicLayout'
+      : undefined;
 
   const meta = route.meta;
   const menu: permissionservicev1_Menu = {
     name: route.name,
     path,
-    type: depth === 0 ? 'CATALOG' : 'MENU',
+    type: isPage ? 'MENU' : 'CATALOG',
     component,
     redirect: route.redirect,
     // DB 里存当前语言的标题字符串（vben 同款约定），meta.title 是 "routes:xxx" i18n key

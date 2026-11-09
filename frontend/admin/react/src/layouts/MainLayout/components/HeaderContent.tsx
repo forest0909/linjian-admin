@@ -277,9 +277,13 @@ export const HeaderContent = ({
     const showHome = breadcrumbPreferences?.showHome ?? true;
 
     const items = typedMatches
-      .filter((match) => {
+      .filter((match, index, all) => {
         // 过滤掉没有 title 的路由
         if (!match.handle?.title) return false;
+
+        // 一级单页的外层和它的 index 子路由是同一页，只留子路由这一项
+        const next = all[index + 1];
+        if (next && next.pathname.replace(/\/$/, '') === match.pathname.replace(/\/$/, '')) return false;
 
         // 过滤掉 index 路由（它们通常是重定向，不应该出现在面包屑中）
         // index 路由的 id 通常包含 "-index"
