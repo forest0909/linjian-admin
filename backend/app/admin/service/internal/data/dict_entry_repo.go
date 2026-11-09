@@ -93,7 +93,8 @@ func (r *DictEntryRepo) List(ctx context.Context, req *paginationV1.PagingReques
 		return nil, dictV1.ErrorBadRequest("invalid parameter")
 	}
 
-	builder := r.entClient.Client().DictEntry.Query().WithDictType()
+	// 译文一次批量加载：逐条查的话，全量预加载字典（路由初始化在等它）会超时
+	builder := r.entClient.Client().DictEntry.Query().WithDictType().WithI18ns()
 
 	whereSelectors, _, err := r.repository.BuildListSelectorWithPaging(builder, req)
 	if err != nil {
@@ -114,23 +115,13 @@ func (r *DictEntryRepo) List(ctx context.Context, req *paginationV1.PagingReques
 			dto.TypeId = &entity.Edges.DictType.ID
 			r.log.Debugf(ctx, "dict entry entity ID: %v", entity.Edges.DictType.ID)
 		}
+		dto.I18N = r.i18n.toDTOMap(entity.Edges.I18ns)
 		dtos = append(dtos, dto)
 	}
 
 	count, err := r.Count(ctx, whereSelectors)
 	if err != nil {
 		return nil, err
-	}
-
-	var i18ns map[string]*dictV1.DictEntryI18N
-	for _, item := range dtos {
-		i18ns, err = r.i18n.ListByEntryID(ctx, item.GetId())
-		if err != nil {
-			return nil, err
-		}
-		item.I18N = i18ns
-
-		r.log.Debugf(ctx, "dict entry: %v", item)
 	}
 
 	return &dictV1.ListDictEntryResponse{
