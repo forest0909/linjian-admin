@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go-wind-admin/third_party/go-utils/trans"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	adminV1 "go-wind-admin/api/gen/go/admin/service/v1"
 	authenticationV1 "go-wind-admin/api/gen/go/authentication/service/v1"
@@ -81,4 +82,60 @@ func TestTaskService_PayloadEmptyAndInvalid(t *testing.T) {
 	}})
 	require.Error(t, err)
 	require.True(t, adminV1.IsBadRequest(err))
+}
+
+// 带 updateMask 的更新：载荷只在掩码包含 task_payload 时才参与写入和校验。
+func TestTaskService_PayloadHonorsUpdateMask(t *testing.T) {
+	const typeName = "tasksvc_payload_mask_type"
+	svc, _ := newTaskServiceForTest(t, newTaskSchedulerStub(typeName))
+	ctx := enttest.NewSystemContext(context.Background())
+	opCtx := auth.NewContext(ctx, &authenticationV1.UserTokenPayload{UserId: 7})
+
+	_, err := svc.Create(opCtx, &taskV1.CreateTaskRequest{Data: &taskV1.Task{
+		Type: taskV1.Task_PERIODIC.Enum(), TypeName: trans.Ptr(typeName),
+		CronSpec: trans.Ptr("0 */5 * * * *"), Enable: trans.Ptr(false), TaskPayload: trans.Ptr(`{"a":1}`),
+	}})
+	require.NoError(t, err)
+	rows, err := svc.taskRepo.List(ctx, &paginationV1.PagingRequest{NoPaging: trans.Ptr(true)})
+	require.NoError(t, err)
+	require.Len(t, rows.GetItems(), 1)
+	id := rows.GetItems()[0].GetId()
+
+	payload := func() *string {
+		got, err := svc.taskRepo.Get(ctx, &taskV1.GetTaskRequest{QueryBy: &taskV1.GetTaskRequest_Id{Id: id}})
+		require.NoError(t, err)
+		if got.TaskPayload == nil {
+			return nil
+		}
+		return trans.Ptr(got.GetTaskPayload())
+	}
+	update := func(data *taskV1.Task, paths ...string) error {
+		_, err := svc.Update(opCtx, &taskV1.UpdateTaskRequest{
+			Id: id, Data: data, UpdateMask: &fieldmaskpb.FieldMask{Paths: paths},
+		})
+		return err
+	}
+
+	// 掩码不含载荷：请求里带的非空载荷不能覆盖已有载荷
+	require.NoError(t, update(&taskV1.Task{Remark: trans.Ptr("r1"), TaskPayload: trans.Ptr(`{"b":2}`)}, "remark"))
+	require.Equal(t, `{"a":1}`, *payload(), "掩码排除载荷时已有载荷不应被覆盖")
+
+	// 掩码不含载荷：被排除的非法内容不应报错
+	require.NoError(t, update(&taskV1.Task{Remark: trans.Ptr("r2"), TaskPayload: trans.Ptr("abc")}, "remark"),
+		"掩码排除的非法载荷不应被校验")
+	require.Equal(t, `{"a":1}`, *payload())
+
+	// 只提交 {enable}（列表行的启停开关）：载荷不变
+	require.NoError(t, update(&taskV1.Task{Enable: trans.Ptr(false)}, "enable"))
+	require.Equal(t, `{"a":1}`, *payload(), "启停开关不应动载荷")
+
+	// 掩码包含载荷：非法内容 400，库不变
+	err = update(&taskV1.Task{TaskPayload: trans.Ptr("abc")}, "task_payload")
+	require.Error(t, err)
+	require.True(t, adminV1.IsBadRequest(err), "掩码包含的非法载荷应 400，实际 %v", err)
+	require.Equal(t, `{"a":1}`, *payload())
+
+	// 掩码包含载荷：空串清成 NULL
+	require.NoError(t, update(&taskV1.Task{TaskPayload: trans.Ptr("")}, "task_payload"))
+	require.Nil(t, payload(), "掩码包含载荷时空串应清成 NULL")
 }

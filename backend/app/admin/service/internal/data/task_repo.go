@@ -18,9 +18,13 @@ import (
 	"go-wind-admin/app/admin/service/internal/data/ent/task"
 
 	"go-wind-admin/third_party/go-utils/copierutil"
+	"go-wind-admin/third_party/go-utils/fieldmaskutil"
 	"go-wind-admin/third_party/go-utils/mapper"
 
 	taskV1 "go-wind-admin/api/gen/go/task/service/v1"
+
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
 type TaskRepo struct {
@@ -208,8 +212,9 @@ func (r *TaskRepo) Update(ctx context.Context, req *taskV1.UpdateTaskRequest) (*
 		}
 	}
 
-	payload, err := normalizeTaskPayload(req.Data.TaskPayload)
-	if err != nil {
+	// 载荷只在掩码包含 task_payload 时才参与校验：先在按掩码过滤后的副本上校验，
+	// 被掩码排除的内容（哪怕是非法 JSON）不报错。回调里不能返回错误，所以要在调用前做。
+	if err := validateMaskedTaskPayload(req.Data, req.UpdateMask); err != nil {
 		return nil, err
 	}
 
@@ -219,16 +224,20 @@ func (r *TaskRepo) Update(ctx context.Context, req *taskV1.UpdateTaskRequest) (*
 			builder.
 				SetNillableType(r.typeConverter.ToEntity(req.Data.Type)).
 				SetNillableTypeName(req.Data.TypeName).
-				SetNillableTaskPayload(payload).
 				SetNillableCronSpec(req.Data.CronSpec).
 				SetNillableEnable(req.Data.Enable).
 				SetNillableRemark(req.Data.Remark).
 				SetNillableUpdatedBy(req.Data.UpdatedBy).
 				SetUpdatedAt(time.Now())
 
-			// 提交了空载荷：清成 NULL（页面把已有载荷清空）。
-			if req.Data.TaskPayload != nil && payload == nil {
-				builder.ClearTaskPayload()
+			// dto 已按掩码过滤：没带载荷（或被掩码排除）时 TaskPayload 是 nil，不动库里的值；
+			// 带了空载荷：清成 NULL（页面把已有载荷清空）。校验已在调用前做过。
+			if dto.TaskPayload != nil {
+				if payload, _ := normalizeTaskPayload(dto.TaskPayload); payload != nil {
+					builder.SetTaskPayload(*payload)
+				} else {
+					builder.ClearTaskPayload()
+				}
 			}
 
 			if req.Data.TaskOptions != nil {
@@ -271,4 +280,22 @@ func normalizeTaskPayload(p *string) (*string, error) {
 		return nil, taskV1.ErrorBadRequest("task payload must be valid JSON")
 	}
 	return p, nil
+}
+
+// validateMaskedTaskPayload 在按 updateMask 过滤后的副本上校验载荷，规则同 UpdateOne 里的过滤。
+// 掩码排除了载荷时不校验；过滤本身失败（如掩码路径非法）交给 UpdateOne 报错。
+func validateMaskedTaskPayload(data *taskV1.Task, mask *fieldmaskpb.FieldMask) error {
+	if data == nil || data.TaskPayload == nil {
+		return nil
+	}
+	var filtered proto.Message = proto.Clone(data)
+	var maskCopy *fieldmaskpb.FieldMask
+	if mask != nil {
+		maskCopy = proto.Clone(mask).(*fieldmaskpb.FieldMask)
+	}
+	if err := fieldmaskutil.FilterByFieldMask(&filtered, maskCopy); err != nil {
+		return nil
+	}
+	_, err := normalizeTaskPayload(filtered.(*taskV1.Task).TaskPayload)
+	return err
 }
