@@ -36,3 +36,19 @@ func TestProcessAuthz_ProjectIsTenantId(t *testing.T) {
 		})
 	}
 }
+
+// 路由的路径模板保留 proto 的下划线（{user_id}），接口表来自 OpenAPI（{userId}）。
+// 鉴权前要转成驼峰，否则多词路径参数的接口，非平台管理员永远 403。
+func TestOpenAPIPathTemplate(t *testing.T) {
+	cases := map[string]string{
+		"/admin/v1/users/{user_id}/password":    "/admin/v1/users/{userId}/password",
+		"/admin/v1/tasks/type-name/{type_name}": "/admin/v1/tasks/type-name/{typeName}",
+		"/admin/v1/a/{first_id}/b/{second_id}":  "/admin/v1/a/{firstId}/b/{secondId}",
+		"/admin/v1/users/{id}":                  "/admin/v1/users/{id}",
+		"/admin/v1/user_profile/list":           "/admin/v1/user_profile/list",
+		"":                                      "",
+	}
+	for in, want := range cases {
+		require.Equal(t, want, openAPIPathTemplate(in), in)
+	}
+}

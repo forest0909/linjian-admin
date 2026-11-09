@@ -681,3 +681,17 @@ func TestTaskService_ConvertTaskOption(t *testing.T) {
 	})
 	require.Len(t, opts, 9, "全部 9 个任务选项都应转换为 asynq 选项")
 }
+
+// asynq 入队时拒绝空的 Group、TaskID。任务选项没填这两项时不能传，否则周期任务每轮都入队失败。
+func TestConvertTaskOptionSkipsEmptyGroupAndTaskID(t *testing.T) {
+	svc := &TaskService{}
+	opts, _ := svc.convertTaskOption(&taskV1.Task{TaskOptions: &taskV1.TaskOption{UniqueTtl: durationpb.New(30 * time.Second)}})
+	for _, o := range opts {
+		if o.Type() == asynq.GroupOpt || o.Type() == asynq.TaskIDOpt {
+			t.Errorf("不应传空的 %v", o)
+		}
+	}
+	if len(opts) != 1 {
+		t.Errorf("应只有 Unique，得到 %v", opts)
+	}
+}
