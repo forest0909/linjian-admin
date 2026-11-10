@@ -283,13 +283,33 @@ func (r *MenuRepo) Update(ctx context.Context, req *permissionV1.UpdateMenuReque
 		}
 	}
 
+	// meta 是 JSON 列，掩码只认 meta.<字段>，字段名用 proto 名（activePath、hideInMenu）。
+	// 这些子路径要在进 UpdateX 之前摘出来：UpdateX 会把掩码整体转蛇形
+	// （meta.activePath → meta_active_path）再校验，结果是 invalid field mask；
+	// UpdateX 还会按掩码裁剪 req.Data，所以 meta 也先留一份。
+	meta := req.Data.Meta
+	if meta == nil {
+		meta = &permissionV1.MenuMeta{}
+	}
 	var metaPaths []string
 	if req.UpdateMask != nil {
+		var paths []string
 		for _, v := range req.UpdateMask.GetPaths() {
-			if strings.HasPrefix(v, "meta.") {
-				metaPaths = append(metaPaths, strings.SplitAfter(v, "meta.")[1])
+			switch {
+			case v == "meta":
+				// 整段 meta 以前被静默忽略（200 但不落库），改成明确报错
+				return permissionV1.ErrorBadRequest("update_mask must list meta fields as meta.<field>")
+			case strings.HasPrefix(v, "meta."):
+				name := menuMetaFieldName(strings.TrimPrefix(v, "meta."))
+				if name == "" {
+					return permissionV1.ErrorBadRequest("unknown update_mask path: %s", v)
+				}
+				metaPaths = append(metaPaths, name)
+			default:
+				paths = append(paths, v)
 			}
 		}
+		req.UpdateMask.Paths = paths
 	}
 
 	builder := r.entClient.Client().Menu.Update()
@@ -311,8 +331,8 @@ func (r *MenuRepo) Update(ctx context.Context, req *permissionV1.UpdateMenuReque
 				builder.SetParentID(*req.Data.ParentId)
 			}
 
-			if req.Data.Meta != nil {
-				r.updateMetaField(builder, req.Data.Meta, metaPaths)
+			if updater := entgoUpdate.SetJsonFieldUpdateBuilder(menu.FieldMeta, meta, metaPaths, false); updater != nil {
+				builder.Modify(updater)
 			}
 		},
 		func(s *sql.Selector) {
@@ -323,19 +343,31 @@ func (r *MenuRepo) Update(ctx context.Context, req *permissionV1.UpdateMenuReque
 	return err
 }
 
-func (r *MenuRepo) updateMetaField(builder *ent.MenuUpdate, meta *permissionV1.MenuMeta, metaPaths []string) {
-	//builder.SetMeta(meta)
+// menuMetaFieldName 把掩码里的 meta 子路径换成 MenuMeta 的 proto 字段名，不认识返回空串。
+// MenuMeta 的字段名本身是驼峰（hideInMenu），但 protojson 解析 FieldMask 时会把
+// 请求里的 meta.hideInMenu 转成 meta.hide_in_menu，两种写法都要认。
+func menuMetaFieldName(path string) string {
+	fields := (&permissionV1.MenuMeta{}).ProtoReflect().Descriptor().Fields()
+	for i := 0; i < fields.Len(); i++ {
+		name := string(fields.Get(i).Name())
+		if path == name || path == jsonSnakeCase(name) {
+			return name
+		}
+	}
+	return ""
+}
 
-	// 删除空值
-	nullUpdater := entgoUpdate.SetJsonFieldValueUpdateBuilder(menu.FieldMeta, meta, metaPaths, false)
-	if nullUpdater != nil {
-		builder.Modify(nullUpdater)
+// jsonSnakeCase 与 protojson 解析 FieldMask 的转换一致：大写字母前加下划线并转小写。
+func jsonSnakeCase(s string) string {
+	var b strings.Builder
+	for _, c := range s {
+		if 'A' <= c && c <= 'Z' {
+			b.WriteByte('_')
+			c += 'a' - 'A'
+		}
+		b.WriteRune(c)
 	}
-	// 更新字段
-	setUpdater := entgoUpdate.SetJsonNullFieldUpdateBuilder(menu.FieldMeta, meta, metaPaths)
-	if setUpdater != nil {
-		builder.Modify(setUpdater)
-	}
+	return b.String()
 }
 
 // Truncate 清空菜单表数据

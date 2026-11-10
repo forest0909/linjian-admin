@@ -55,7 +55,8 @@ export const transformRoutesToMenu = (
         order: route.meta?.order, // 提取排序字段
       };
 
-      if (route.children) {
+      // 隐藏子菜单：目录本身留在菜单里，点进去走它的重定向
+      if (route.children && !route.meta?.hideChildrenInMenu) {
         menuItem.children = transformRoutesToMenu(route.children, permissions, { parentPath: fullPath, checkAuthority });
       }
 
