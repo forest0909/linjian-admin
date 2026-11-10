@@ -1,5 +1,5 @@
 {
-  "hideInMenuSyncHint": "Sign in again or refresh after saving. The next menu sync overwrites this value with the route definition.",
+  "hideInMenuSyncHint": "Sign in again or refresh after saving. Menu sync only fills in missing settings and never overwrites values changed on this page.",
   "pageTitle": "Menu Management",
   "moduleName": "Menu",
   "serial": "#",
@@ -21,6 +21,9 @@
   "iconPlaceholder": "Enter icon name",
   "path": "Route Path",
   "pathPlaceholder": "Enter route path",
+  "activePath": "Active Menu",
+  "activePathPlaceholder": "e.g. /map",
+  "activePathHint": "Menu to highlight while this page is open, for drill-down pages hidden from the menu. Leave empty to highlight this page. Once cleared, the next menu sync fills it back from the route definition.",
   "component": "Component Path",
   "componentPlaceholder": "Enter component path",
   "authority": "Authority",

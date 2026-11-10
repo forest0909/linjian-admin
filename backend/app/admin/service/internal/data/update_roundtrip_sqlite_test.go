@@ -364,7 +364,7 @@ func TestRepoUpdateRoundTrip(t *testing.T) {
 				return menuRepo.Update(ctx, &permissionV1.UpdateMenuRequest{Id: id, Data: d.(*permissionV1.Menu), UpdateMask: m})
 			},
 			skip: map[string]string{
-				"meta":     "嵌套 JSON，按 meta.xxx 子路径由 updateMetaField 写入",
+				"meta":     "嵌套 JSON，SQL 是 PG 专用，见 menu_meta_update_test.go",
 				"children": "树形，读侧拼装",
 			},
 			values: func() map[string]any { return map[string]any{"parent_id": menuParent} },

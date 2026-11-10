@@ -24,8 +24,8 @@ import {
   isCatalog,
   isEmbedded,
   isMenu,
-  normalizeAuthority,
 } from '../constants';
+import { formValuesToMenu, menuToFormValues } from '../menu-form';
 
 interface MenuDrawerProps {
   open: boolean;
@@ -78,25 +78,7 @@ const MenuDrawer: React.FC<MenuDrawerProps> = ({ open, mode, data, onClose, onSu
   // 编辑模式时填充表单
   useEffect(() => {
     if (open && mode === 'edit' && data) {
-      // 将 meta 内部字段展开到表单顶级
-      const meta = (data as any).meta || {};
-      const formValues: Record<string, any> = {
-        type: data.type || 'MENU',
-        status: data.status || 'ON',
-        path: data.path || '',
-        component: data.component || '',
-        parentId: data.parentId || undefined,
-        'meta.title': meta.title || '',
-        'meta.order': meta.order || 0,
-        'meta.icon': meta.icon || '',
-        'meta.authority': normalizeAuthority(meta.authority),
-        'meta.keepAlive': meta.keepAlive || false,
-        'meta.affixTab': meta.affixTab || false,
-        'meta.hideInMenu': meta.hideInMenu || false,
-        'meta.hideChildrenInMenu': meta.hideChildrenInMenu || false,
-        'meta.hideInBreadcrumb': meta.hideInBreadcrumb || false,
-        'meta.hideInTab': meta.hideInTab || false,
-      };
+      const formValues = menuToFormValues(data);
       setTimeout(() => {
         formRef.current?.setFieldsValue(formValues);
       }, 0);
@@ -135,27 +117,8 @@ const MenuDrawer: React.FC<MenuDrawerProps> = ({ open, mode, data, onClose, onSu
     setConfirmLoading(true);
 
     try {
-      // 将 meta 字段重新聚合
-      const payload: Record<string, any> = {
-        type: values.type,
-        status: values.status,
-        path: values.path,
-        component: values.component,
-        parentId: values.parentId || 0,
-        // children 是树的只读虚拟边：表里没有该列，进 updateMask 会让后端生成非法 SQL
-        meta: {
-          title: values['meta.title'],
-          order: values['meta.order'] || 0,
-          icon: values['meta.icon'] || '',
-          authority: values['meta.authority'] || [],
-          keepAlive: values['meta.keepAlive'] || false,
-          affixTab: values['meta.affixTab'] || false,
-          hideInMenu: values['meta.hideInMenu'] || false,
-          hideChildrenInMenu: values['meta.hideChildrenInMenu'] || false,
-          hideInBreadcrumb: values['meta.hideInBreadcrumb'] || false,
-          hideInTab: values['meta.hideInTab'] || false,
-        },
-      };
+      // 只带当前渲染的表单项：按类型隐藏的字段（如目录的组件路径）不能进 updateMask，否则会被清空
+      const payload = formValuesToMenu(values, mode === 'edit' ? data?.type : undefined);
 
       if (mode === 'create') {
         await createMutation.mutateAsync({ data: payload as any });
@@ -184,6 +147,8 @@ const MenuDrawer: React.FC<MenuDrawerProps> = ({ open, mode, data, onClose, onSu
         component: 'BasicLayout',
       }}
       onFinish={handleSubmit}
+      // 保留空值：formValuesToMenu 靠"字段在不在 values 里"判断表单项是否渲染，清空的激活菜单也要能提交
+      omitNil={false}
       submitter={{
         searchConfig: {
           submitText: t('common:button.submit'),
@@ -293,6 +258,24 @@ const MenuDrawer: React.FC<MenuDrawerProps> = ({ open, mode, data, onClose, onSu
               label={t('component')}
               placeholder={t('componentPlaceholder')}
               rules={[{ required: true, message: t('requiredComponent') }]}
+              fieldProps={{
+                allowClear: true,
+              }}
+            />
+          );
+        }}
+      </ProFormDependency>
+
+      {/* 激活菜单路径 - 仅菜单类型：隐藏的下钻页高亮所属菜单 */}
+      <ProFormDependency name={['type']}>
+        {({ type }) => {
+          if (!isMenu(type)) return null;
+          return (
+            <ProFormText
+              name="meta.activePath"
+              label={t('activePath')}
+              placeholder={t('activePathPlaceholder')}
+              extra={t('activePathHint')}
               fieldProps={{
                 allowClear: true,
               }}

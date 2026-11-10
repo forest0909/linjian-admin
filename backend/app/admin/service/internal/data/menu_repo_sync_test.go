@@ -126,6 +126,67 @@ func TestMenuRepoSyncMenus_RebuildReplace(t *testing.T) {
 	require.NotEqual(t, oldID, fresh.ID)
 }
 
+// TestMenuRepoSyncMenus_MergeKeepsAdminEdits 增量合并不覆盖管理员在菜单页改过的值：
+// 库里已有的 meta 键（含显式 false）、类型、组件都保留，只补库里缺的；新菜单整段写入。
+func TestMenuRepoSyncMenus_MergeKeepsAdminEdits(t *testing.T) {
+	repo := newMenuRepoSqlite(t)
+	ctx := enttest.NewSystemContext(context.Background())
+
+	// 管理员改过：标题改成「审计」、隐藏菜单从代码里的 true 改成 false、组件换成 BasicLayout
+	require.NoError(t, repo.Create(ctx, &permissionV1.CreateMenuRequest{Data: &permissionV1.Menu{
+		Name:      trans.Ptr("Log"),
+		Path:      trans.Ptr("/log"),
+		Type:      permissionV1.Menu_CATALOG.Enum(),
+		Component: trans.Ptr("BasicLayout"),
+		Meta: &permissionV1.MenuMeta{
+			Title:      trans.Ptr("审计"),
+			HideInMenu: trans.Ptr(false),
+			Authority:  []string{"sys:platform_admin"},
+		},
+	}}))
+	logID := mustMenuIDByName(t, repo, ctx, "Log")
+
+	payload := []*permissionV1.Menu{{
+		Name:      trans.Ptr("Log"),
+		Path:      trans.Ptr("/log"),
+		Type:      permissionV1.Menu_MENU.Enum(),
+		Component: trans.Ptr("app/log/index.vue"),
+		Meta: &permissionV1.MenuMeta{
+			Title:            trans.Ptr("日志审计"),
+			HideInMenu:       trans.Ptr(true),
+			HideInBreadcrumb: trans.Ptr(true),
+			Icon:             trans.Ptr("lucide:logs"),
+			Authority:        []string{"other"},
+		},
+		Children: []*permissionV1.Menu{{
+			Name:      trans.Ptr("LoginLog"),
+			Path:      trans.Ptr("login"),
+			Type:      permissionV1.Menu_MENU.Enum(),
+			Component: trans.Ptr("app/log/login/index.vue"),
+			Meta:      &permissionV1.MenuMeta{Title: trans.Ptr("登录日志"), ActivePath: trans.Ptr("/log")},
+		}},
+	}}
+	_, err := repo.SyncMenus(ctx, payload, permissionV1.SyncMenusRequest_MERGE, 9)
+	require.NoError(t, err)
+
+	row, err := repo.entClient.Client().Menu.Query().Where(menu.IDEQ(logID)).Only(ctx)
+	require.NoError(t, err)
+	require.Equal(t, menu.TypeCatalog, *row.Type, "类型保留")
+	require.Equal(t, "BasicLayout", derefStrP(row.Component), "组件保留")
+	require.Equal(t, "审计", row.Meta.GetTitle(), "改过的标题保留")
+	require.NotNil(t, row.Meta.HideInMenu)
+	require.False(t, row.Meta.GetHideInMenu(), "显式 false 保留，不被代码里的 true 补回")
+	require.Equal(t, []string{"sys:platform_admin"}, row.Meta.GetAuthority(), "权限标识保留")
+	require.Equal(t, "lucide:logs", row.Meta.GetIcon(), "缺的键补上")
+	require.True(t, row.Meta.GetHideInBreadcrumb(), "缺的键补上")
+
+	child, err := repo.entClient.Client().Menu.Query().Where(menu.NameEQ("LoginLog")).Only(ctx)
+	require.NoError(t, err)
+	require.Equal(t, logID, *child.ParentID)
+	require.Equal(t, "登录日志", child.Meta.GetTitle(), "新菜单整段写入")
+	require.Equal(t, "/log", child.Meta.GetActivePath(), "新菜单整段写入")
+}
+
 func mustMenuIDByName(t *testing.T, repo *MenuRepo, ctx context.Context, name string) uint32 {
 	t.Helper()
 	row, err := repo.entClient.Client().Menu.Query().Where(menu.NameEQ(name)).Only(ctx)

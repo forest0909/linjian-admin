@@ -60,6 +60,18 @@ export function useCreateMenu(
   });
 }
 
+/**
+ * 菜单更新的 updateMask。meta 是 JSON 列，后端只认 meta.<字段>：
+ * 写整段 meta 会被拒绝（以前是 200 但什么都没写）。只列 values.meta 里出现的字段，
+ * 值为 undefined 的字段后端会删掉这个键。
+ */
+export function menuUpdateMask(values: Record<string, unknown>): string {
+  const keys = Object.keys(values ?? {}).flatMap((key) =>
+    key === 'meta' ? Object.keys(values.meta ?? {}).map((field) => `meta.${field}`) : [key],
+  );
+  return makeUpdateMask(keys);
+}
+
 export function useUpdateMenu(
   options?: UseMutationOptions<{}, Error, { id: number; values: Record<string, any> }>,
 ) {
@@ -68,7 +80,7 @@ export function useUpdateMenu(
       apiClient.menuService.Update({
         id,
         data: { ...values } as any,
-        updateMask: makeUpdateMask(Object.keys(values ?? {})),
+        updateMask: menuUpdateMask(values),
       }),
     ...options,
   });
@@ -171,6 +183,8 @@ async function routeToMenu(
           hideInMenu: meta.hideInMenu,
           hideChildrenInMenu: meta.hideChildrenInMenu,
           hideInTab: meta.hideInTab,
+          hideInBreadcrumb: meta.hideInBreadcrumb,
+          activePath: meta.activePath,
           keepAlive: meta.keepAlive,
           affixTab: meta.affixTab,
           authority: meta.authority,
