@@ -118,17 +118,16 @@ const TaskManagement = () => {
   const handleEnableChange = async (record: Task, checked: boolean) => {
     setLoadingTaskId(record.id as number);
     try {
+      // 后端 Update 已按 enable 注销或重新注册调度项，不能再发 tasks:control：
+      // 停用后 Stop 会因任务已停用返回 500，启用后 Start 会重复注册（一次性任务会重复入队）。
       await updateMutation.mutateAsync({
         id: record.id as number,
         values: { enable: checked },
       });
-      await controlMutation.mutateAsync({
-        typeName: record.typeName as string,
-        controlType: checked ? 'Start' : 'Stop',
-      });
       message.success(t('updateStatusSuccess'));
       actionRef.current?.reload();
-    } catch {
+    } catch (error) {
+      console.error('任务启停切换失败', error);
       message.error(t('updateStatusFailed'));
     } finally {
       setLoadingTaskId(undefined);
