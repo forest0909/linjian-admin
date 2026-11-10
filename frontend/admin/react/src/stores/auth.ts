@@ -71,6 +71,12 @@ async function applySuccessfulLogin(
   now: number,
   onSuccess?: () => void,
 ): Promise<void> {
+  // 每次登录都从空页签开始，只留落地页那一个。登出会清页签，但令牌失效后被守卫
+  // 送回登录页时不一定走登出，localStorage 里还留着上次的页签。
+  // 必须在写 token 之前：token 一写 GuestGuard 就跳进主布局，TabsBar 会加入当前页签，
+  // 之后再清会把它一起清掉，而路由没变不会再加回来，页签栏就空了。
+  useTabsStore.getState().$reset();
+
   // 保存 Token
   const accessTokenPayload: TokenPayload = {
     value: response.access_token || '',

@@ -15,7 +15,7 @@ import { Forbidden } from '@/pages/core/error';
 import { AccessibleRoutesContext } from '@/core/router';
 import type { AppRouteObject, ComponentRecordType } from '@/core/router';
 import MainLayout from '@/layouts/MainLayout';
-import { AuthGuard } from '@/router/guards';
+import { AuthGuard, GuestRootRedirect } from '@/router/guards';
 
 import { errorRoutes } from './config/error-routes';
 import Loading from '@/components/common/Loading';
@@ -162,6 +162,7 @@ export const AppRouter = () => {
           pageMap,
           autoInjectRedirect: true,
           autoSort: true,
+          guestRootElement: isAuthenticated ? undefined : <GuestRootRedirect />,
         });
 
         if (!stale) {
