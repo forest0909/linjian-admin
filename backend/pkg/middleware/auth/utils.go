@@ -3,7 +3,9 @@ package auth
 import (
 	"context"
 	"reflect"
+	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/go-kratos/kratos/v2/transport"
 	"github.com/go-kratos/kratos/v2/transport/http"
@@ -14,6 +16,22 @@ import (
 
 	authenticationV1 "go-wind-admin/api/gen/go/authentication/service/v1"
 )
+
+var pathParamRe = regexp.MustCompile(`\{([^}/]+)\}`)
+
+// openAPIPathTemplate 把路由模板里的下划线路径参数（{user_id}）转成驼峰（{userId}）。
+// 接口表来自 OpenAPI，OpenAPI 的路径参数是驼峰，不转的话多词参数的接口匹配不上策略。
+func openAPIPathTemplate(tpl string) string {
+	return pathParamRe.ReplaceAllStringFunc(tpl, func(m string) string {
+		parts := strings.Split(m[1:len(m)-1], "_")
+		for i := 1; i < len(parts); i++ {
+			if parts[i] != "" {
+				parts[i] = strings.ToUpper(parts[i][:1]) + parts[i][1:]
+			}
+		}
+		return "{" + strings.Join(parts, "") + "}"
+	})
+}
 
 func processAuthz(
 	ctx context.Context,
@@ -26,7 +44,7 @@ func processAuthz(
 	var htr *http.Transport
 	var ok bool
 	if htr, ok = tr.(*http.Transport); ok {
-		path = authzEngine.Resource(htr.PathTemplate())
+		path = authzEngine.Resource(openAPIPathTemplate(htr.PathTemplate()))
 		action = authzEngine.Action(htr.Request().Method)
 	}
 

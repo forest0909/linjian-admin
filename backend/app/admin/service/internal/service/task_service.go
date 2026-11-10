@@ -518,8 +518,13 @@ func (s *TaskService) convertTaskOption(t *taskV1.Task) (opts []asynq.Option, pa
 		if t.GetTaskOptions().Retention != nil {
 			opts = append(opts, asynq.Retention(t.GetTaskOptions().GetRetention().AsDuration()))
 		}
-		opts = append(opts, asynq.Group(t.GetTaskOptions().GetGroup()))
-		opts = append(opts, asynq.TaskID(t.GetTaskOptions().GetTaskId()))
+		// asynq 拒绝空的 Group、TaskID（入队时报错，周期任务每轮都失败），没填就不传。
+		if group := t.GetTaskOptions().GetGroup(); group != "" {
+			opts = append(opts, asynq.Group(group))
+		}
+		if taskID := t.GetTaskOptions().GetTaskId(); taskID != "" {
+			opts = append(opts, asynq.TaskID(taskID))
+		}
 	}
 
 	return
