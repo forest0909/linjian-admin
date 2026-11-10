@@ -53,6 +53,20 @@ var selfServiceOperations = map[string]struct{}{
 	adminV1.OperationUserProfileServiceVerifyContact:           {},
 	adminV1.OperationOnlineSessionServiceListMyOnlineSession:   {},
 	adminV1.OperationOnlineSessionServiceRevokeMyOnlineSession: {},
+
+	// 自己的收件箱：仓储按令牌钉住收件人（inboxRestrictToViewer、inboxScopedUserID），
+	// 查询里写别人的 ID 只会得到空结果。页面顶栏的铃铛对每个登录用户都要用。
+	adminV1.OperationInternalMessageRecipientServiceListUserInbox:               {},
+	adminV1.OperationInternalMessageRecipientServiceMarkNotificationAsRead:      {},
+	adminV1.OperationInternalMessageRecipientServiceMarkNotificationsStatus:     {},
+	adminV1.OperationInternalMessageRecipientServiceDeleteNotificationFromInbox: {},
+
+	// 字典只读：不是"自己的"数据，是全局代码表。路由初始化对每个登录用户都预加载，
+	// 业务页面靠它把编码翻成中文，内容也不敏感。增删改仍走接口鉴权。
+	adminV1.OperationDictTypeServiceList:            {},
+	adminV1.OperationDictTypeServiceGet:             {},
+	adminV1.OperationDictEntryServiceList:           {},
+	adminV1.OperationDictEntryServiceListByTypeCode: {},
 }
 
 // newAuthzRequiredMatcher 除 selfServiceOperations 外的操作都要过接口级鉴权。

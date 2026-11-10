@@ -116,6 +116,11 @@ func (r *DictEntryI18nRepo) ListByEntryID(ctx context.Context, entryID uint32) (
 		return nil, err
 	}
 
+	return r.toDTOMap(entities), nil
+}
+
+// toDTOMap 把一个字典项的译文转成 语言代码 → DTO。
+func (r *DictEntryI18nRepo) toDTOMap(entities []*ent.DictEntryI18n) map[string]*dictV1.DictEntryI18N {
 	result := make(map[string]*dictV1.DictEntryI18N)
 	for _, entity := range entities {
 		if entity.LanguageCode == nil {
@@ -126,7 +131,7 @@ func (r *DictEntryI18nRepo) ListByEntryID(ctx context.Context, entryID uint32) (
 		result[*entity.LanguageCode] = dto
 	}
 
-	return result, nil
+	return result
 }
 
 // GetByEntryIDAndLangCode 根据字典项ID和语言代码查询多语言数据

@@ -39,6 +39,8 @@ function pickFirstMenuPath(routes: AppRouteObject[]): string | null {
   for (const route of routes) {
     if (route.meta?.hideInMenu) continue;
     if (route.redirect) return route.redirect;
+    // 一级单页：页面是 index 子路由，落点就是它自己（见 wrapTopLevelPages）
+    if (route.path && route.children?.some((c) => c.index)) return route.path;
     const firstChild =
       route.children?.find((c) => c.path && !c.meta?.hideInMenu) ??
       route.children?.find((c) => c.path);
