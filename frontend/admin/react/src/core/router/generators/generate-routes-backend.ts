@@ -35,7 +35,7 @@ export async function generateRoutesByBackend(
 
         // 3. 归位嵌套绝对子路径 + 补目录组缺省重定向，再递归转换路由树
         rebaseBackendTree(menuRoutes);
-        return convertRoutes(menuRoutes, layoutMap, normalizedPageMap);
+        return convertRoutes(wrapTopLevelPages(menuRoutes, layoutMap), layoutMap, normalizedPageMap);
     } catch (error) {
         console.error('Failed to generate routes from backend:', error);
         return [];
@@ -116,6 +116,8 @@ function convertRoutes(
                 const indexRoute: AppRouteObject = {
                     index: true,
                     element: createElement(Navigate, {to: rest.redirect, replace: true}),
+                    // 只负责跳转：经过这里（如点面包屑的目录）不能留下「未知页面」页签
+                    meta: {hideInMenu: true, hideInTab: true},
                 };
                 route.children = [indexRoute, ...(rest.children as any[])];
             } else if (!componentPath) {
@@ -125,6 +127,19 @@ function convertRoutes(
         }
 
         return route;
+    });
+}
+
+/**
+ * 一级单页（顶层 MENU，如 /situation）没有目录组提供布局，这里包一层：
+ * 外层保留路径和菜单信息并挂 BasicLayout，页面作为 index 子路由渲染。
+ */
+function wrapTopLevelPages(nodes: BackendRoute[], layoutMap: ComponentRecord): BackendRoute[] {
+    if (!layoutMap.BasicLayout) return nodes;
+    return nodes.map((node) => {
+        if (!node.component || layoutMap[node.component] || node.children?.length) return node;
+        const {path: _path, ...page} = node;
+        return {...node, component: 'BasicLayout', children: [{...page, index: true} as BackendRoute]};
     });
 }
 

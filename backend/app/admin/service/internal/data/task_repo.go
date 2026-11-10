@@ -2,6 +2,8 @@ package data
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"time"
 
 	"entgo.io/ent/dialect/sql"
@@ -16,9 +18,13 @@ import (
 	"go-wind-admin/app/admin/service/internal/data/ent/task"
 
 	"go-wind-admin/third_party/go-utils/copierutil"
+	"go-wind-admin/third_party/go-utils/fieldmaskutil"
 	"go-wind-admin/third_party/go-utils/mapper"
 
 	taskV1 "go-wind-admin/api/gen/go/task/service/v1"
+
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
 type TaskRepo struct {
@@ -145,11 +151,16 @@ func (r *TaskRepo) Create(ctx context.Context, req *taskV1.CreateTaskRequest) (*
 		return nil, taskV1.ErrorBadRequest("invalid parameter")
 	}
 
+	payload, err := normalizeTaskPayload(req.Data.TaskPayload)
+	if err != nil {
+		return nil, err
+	}
+
 	builder := r.entClient.Client().Task.Create().
 		SetNillableTenantID(req.Data.TenantId).
 		SetNillableType(r.typeConverter.ToEntity(req.Data.Type)).
 		SetNillableTypeName(req.Data.TypeName).
-		SetNillableTaskPayload(req.Data.TaskPayload).
+		SetNillableTaskPayload(payload).
 		SetNillableCronSpec(req.Data.CronSpec).
 		SetNillableEnable(req.Data.Enable).
 		SetNillableRemark(req.Data.Remark).
@@ -201,18 +212,33 @@ func (r *TaskRepo) Update(ctx context.Context, req *taskV1.UpdateTaskRequest) (*
 		}
 	}
 
+	// 载荷只在掩码包含 task_payload 时才参与校验：先在按掩码过滤后的副本上校验，
+	// 被掩码排除的内容（哪怕是非法 JSON）不报错。回调里不能返回错误，所以要在调用前做。
+	if err := validateMaskedTaskPayload(req.Data, req.UpdateMask); err != nil {
+		return nil, err
+	}
+
 	builder := r.entClient.Client().Task.UpdateOneID(req.GetId())
 	result, err := r.repository.UpdateOne(ctx, builder, req.Data, req.GetUpdateMask(),
 		func(dto *taskV1.Task) {
 			builder.
 				SetNillableType(r.typeConverter.ToEntity(req.Data.Type)).
 				SetNillableTypeName(req.Data.TypeName).
-				SetNillableTaskPayload(req.Data.TaskPayload).
 				SetNillableCronSpec(req.Data.CronSpec).
 				SetNillableEnable(req.Data.Enable).
 				SetNillableRemark(req.Data.Remark).
 				SetNillableUpdatedBy(req.Data.UpdatedBy).
 				SetUpdatedAt(time.Now())
+
+			// dto 已按掩码过滤：没带载荷（或被掩码排除）时 TaskPayload 是 nil，不动库里的值；
+			// 带了空载荷：清成 NULL（页面把已有载荷清空）。校验已在调用前做过。
+			if dto.TaskPayload != nil {
+				if payload, _ := normalizeTaskPayload(dto.TaskPayload); payload != nil {
+					builder.SetTaskPayload(*payload)
+				} else {
+					builder.ClearTaskPayload()
+				}
+			}
 
 			if req.Data.TaskOptions != nil {
 				builder.SetTaskOptions(req.Data.TaskOptions)
@@ -242,4 +268,34 @@ func (r *TaskRepo) Delete(ctx context.Context, req *taskV1.DeleteTaskRequest) er
 	}
 
 	return nil
+}
+
+// normalizeTaskPayload 规整任务载荷：task_payload 是 jsonb 列，空串不是合法 JSON，
+// 直接写库会 500。nil 或空白视为没有载荷（返回 nil，存 NULL）；非空但不是合法 JSON 返回 400。
+func normalizeTaskPayload(p *string) (*string, error) {
+	if p == nil || strings.TrimSpace(*p) == "" {
+		return nil, nil
+	}
+	if !json.Valid([]byte(*p)) {
+		return nil, taskV1.ErrorBadRequest("task payload must be valid JSON")
+	}
+	return p, nil
+}
+
+// validateMaskedTaskPayload 在按 updateMask 过滤后的副本上校验载荷，规则同 UpdateOne 里的过滤。
+// 掩码排除了载荷时不校验；过滤本身失败（如掩码路径非法）交给 UpdateOne 报错。
+func validateMaskedTaskPayload(data *taskV1.Task, mask *fieldmaskpb.FieldMask) error {
+	if data == nil || data.TaskPayload == nil {
+		return nil
+	}
+	var filtered proto.Message = proto.Clone(data)
+	var maskCopy *fieldmaskpb.FieldMask
+	if mask != nil {
+		maskCopy = proto.Clone(mask).(*fieldmaskpb.FieldMask)
+	}
+	if err := fieldmaskutil.FilterByFieldMask(&filtered, maskCopy); err != nil {
+		return nil
+	}
+	_, err := normalizeTaskPayload(filtered.(*taskV1.Task).TaskPayload)
+	return err
 }

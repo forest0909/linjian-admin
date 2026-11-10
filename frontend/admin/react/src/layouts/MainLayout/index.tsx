@@ -33,6 +33,7 @@ import { AccessibleRoutesContext } from '@/core/router';
 import type { AppRouteObject } from '@/core/router/types';
 
 interface LayoutRouteHandle {
+  activePath?: string;
   title?: string;
   icon?: string;
 }
@@ -153,9 +154,11 @@ export const MainLayout = ({ routes: dynamicRoutes }: MainLayoutProps) => {
   }, [setIsMobile, setPreferences]);
 
   // 根据当前路径计算选中的菜单项
+  // 隐藏的下钻页（如水库详情）在菜单里没有自己的项，按 meta.activePath 高亮所属菜单
+  const activePath = matches.at(-1)?.handle?.activePath;
   const selectedKeys = useMemo(() => {
-    return [location.pathname];
-  }, [location.pathname]);
+    return [activePath || location.pathname];
+  }, [activePath, location.pathname]);
 
   // 根据当前路径和菜单数据计算应该展开的菜单项
   useEffect(() => {

@@ -116,6 +116,50 @@ describe('backend menus', () => {
     expect(routes[0].children?.some((r) => r.path === 'sibling')).toBe(false);
   });
 
+  it('wraps a top-level page in the layout and lands on it', async () => {
+    const Layout = () => null;
+    const Page = () => null;
+    const routes = await generateRoutesByBackend({
+      fetchMenuListAsync: async () =>
+        [
+          { name: 'Home', path: '/home', component: 'app/opm/user/list/index.vue', meta: { title: 'home', order: 1 } },
+          {
+            name: 'Ops',
+            path: '/ops',
+            component: 'BasicLayout',
+            meta: { title: 'ops', order: 2 },
+            children: [
+              {
+                name: 'Dispatch',
+                path: 'dispatch',
+                meta: { title: 'dispatch' },
+                children: [{ name: 'Plans', path: 'plans', component: 'app/opm/user/list/index.vue', meta: { title: 'plans' } }],
+              },
+            ],
+          },
+        ] as BackendRoute[],
+      layoutMap: { BasicLayout: Layout },
+      pageMap: { '/opm/user/list': Page },
+    });
+    const [home, ops] = routes;
+    expect(home.path).toBe('/home');
+    expect(home.children).toHaveLength(1);
+    expect(home.children?.[0].index).toBe(true);
+    expect(home.children?.[0].path).toBeUndefined();
+    expect(home.children?.[0].meta?.title).toBe('home');
+
+    // 菜单里一级单页是叶子，三级目录按层保留
+    const menu = transformRoutesToMenu(routes, [], { checkAuthority: false }) ?? [];
+    expect(menu[0].path).toBe('/home');
+    expect(menu[0].children).toBeUndefined();
+    expect(menu[1].children?.[0].children?.[0].path).toBe('/ops/dispatch/plans');
+    expect(ops.redirect).toBe('/ops/dispatch/plans');
+
+    // 目录的 index 跳转路由不产生页签
+    const redirectIndex = ops.children?.find((c) => c.index);
+    expect(redirectIndex?.meta?.hideInTab).toBe(true);
+  });
+
   it('keeps static routes with an empty or failed navigation without frontend fallback', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     for (const fail of [false, true]) {

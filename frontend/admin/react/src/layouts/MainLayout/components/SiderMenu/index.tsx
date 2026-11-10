@@ -34,6 +34,9 @@ export const Index = ({
 
   // 从 preferences 获取侧边栏配置
   const sidebarConfig = preferences.sidebar;
+  // 折叠时子菜单是悬停弹层，不能沿用按路由算出的 openKeys，否则一加载当前目录就弹出来不收
+  const [popupKeys, setPopupKeys] = useState<string[]>([]);
+
   const sidebarCollapsed = sidebarConfig?.collapsed ?? false;
   const collapsedShowTitle = sidebarConfig?.collapsedShowTitle ?? false;
   const expandOnHover = sidebarConfig?.expandOnHover ?? true;
@@ -193,8 +196,8 @@ export const Index = ({
             mode="inline"
             inlineCollapsed={titleStashed}
             selectedKeys={selectedKeys}
-            openKeys={openKeys}
-            onOpenChange={onOpenChange}
+            openKeys={isCollapsed ? popupKeys : openKeys}
+            onOpenChange={isCollapsed ? setPopupKeys : onOpenChange}
             onClick={handleMenuClick}
             items={menuItems}
             style={{
