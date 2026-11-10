@@ -18,7 +18,7 @@ import { PageContainer } from '@/layouts/components/PageContainer';
 // Hooks
 import { useMenuData } from './hooks/useMenuData';
 import { useLayoutState } from './hooks/useLayoutState';
-import { findActiveRootMenu, getLayoutShape } from './utils/layoutMenu';
+import { findActiveRootMenu, getLayoutShape, resolveMenuKey } from './utils/layoutMenu';
 
 // Stores & Preferences
 import { useUserStore, useAuthStore, usePageRefreshStore, useLockStore } from '@/stores';
@@ -155,10 +155,13 @@ export const MainLayout = ({ routes: dynamicRoutes }: MainLayoutProps) => {
 
   // 根据当前路径计算选中的菜单项
   // 隐藏的下钻页（如水库详情）在菜单里没有自己的项，按 meta.activePath 高亮所属菜单
+  // 当前页或 activePath 落在隐藏了子菜单的目录下时，解析成那个目录
   const activePath = matches.at(-1)?.handle?.activePath;
-  const selectedKeys = useMemo(() => {
-    return [activePath || location.pathname];
-  }, [activePath, location.pathname]);
+  const menuKey = useMemo(
+    () => resolveMenuKey(menuData, activePath || location.pathname),
+    [menuData, activePath, location.pathname],
+  );
+  const selectedKeys = useMemo(() => [menuKey], [menuKey]);
 
   // 根据当前路径和菜单数据计算应该展开的菜单项
   useEffect(() => {
@@ -206,9 +209,9 @@ export const MainLayout = ({ routes: dynamicRoutes }: MainLayoutProps) => {
       return [];
     };
 
-    const openKeys = calculateOpenKeys(menuData, location.pathname);
+    const openKeys = calculateOpenKeys(menuData, menuKey);
     setOpenKeys(openKeys);
-  }, [location.pathname, menuData, setOpenKeys]);
+  }, [menuKey, menuData, setOpenKeys]);
 
   // 布局模式：决定外框里显示哪些部分
   const shape = getLayoutShape(preferences.app.layout, isMobile);

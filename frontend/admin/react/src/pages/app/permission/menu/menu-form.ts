@@ -42,13 +42,23 @@ export function menuToFormValues(menu: Menu): Record<string, unknown> {
  * 提交：表单值 → 菜单请求体。
  * 只带 values 里出现的字段：DrawerForm 的 onFinish 只给当前渲染的表单项，按类型隐藏的项
  * （目录没有组件路径、权限标识）不在里面。编辑时这些字段不能进 updateMask，否则会被清空。
+ *
+ * 例外：从别的类型改成目录（originalType 是编辑前的类型）。组件路径输入框此时已卸载，
+ * 但旧的页面组件不能留着，否则它会作为父路由渲染，子页面显示不出来。按目录的约定改写：
+ * 顶层目录挂 BasicLayout，嵌套目录不挂组件（不给值，后端按掩码置空）。
  */
-export function formValuesToMenu(values: Record<string, unknown>): Record<string, unknown> {
+export function formValuesToMenu(
+  values: Record<string, unknown>,
+  originalType?: string,
+): Record<string, unknown> {
   const payload: Record<string, unknown> = {};
   for (const key of TOP_LEVEL_FIELDS) {
     if (key in values) payload[key] = values[key];
   }
   if ('parentId' in payload) payload.parentId = payload.parentId || 0;
+  if (originalType && originalType !== 'CATALOG' && values.type === 'CATALOG') {
+    payload.component = values.parentId ? undefined : 'BasicLayout';
+  }
 
   const meta: Record<string, unknown> = {};
   const has = (field: string) => `meta.${field}` in values;

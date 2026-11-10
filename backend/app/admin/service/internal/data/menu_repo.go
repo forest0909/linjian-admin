@@ -23,6 +23,7 @@ import (
 
 	"go-wind-admin/third_party/go-utils/trans"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	permissionV1 "go-wind-admin/api/gen/go/permission/service/v1"
 )
@@ -490,21 +491,25 @@ func (r *MenuRepo) syncMergeTree(
 		exist := existing[fullPath]
 		var rowID uint32
 		if exist != nil {
+			// 已有菜单：管理员能在菜单抽屉里改的字段（类型、路径、组件、上级、meta 各键）
+			// 库里有值就保留，只补库里为空的；redirect 页面上改不了，仍以代码路由为准；
+			// status、name、alias 同步本来就不碰。路径是匹配键，不用再写。
 			builder := client.Menu.Update().
 				Where(menu.IDEQ(exist.ID)).
-				SetNillableType(r.typeConverter.ToEntity(m.Type)).
-				SetNillablePath(m.Path).
 				SetNillableRedirect(m.Redirect).
-				SetNillableComponent(m.Component).
 				SetNillableUpdatedBy(trans.Ptr(operatorId)).
 				SetUpdatedAt(time.Now())
-			if parentID != nil && *parentID > 0 {
-				builder.SetParentID(*parentID)
-			} else {
-				builder.ClearParentID()
+			if exist.Type == nil {
+				builder.SetNillableType(r.typeConverter.ToEntity(m.Type))
 			}
-			if m.Meta != nil {
-				builder.SetMeta(m.Meta)
+			if derefStrP(exist.Component) == "" {
+				builder.SetNillableComponent(m.Component)
+			}
+			if (exist.ParentID == nil || *exist.ParentID == 0) && parentID != nil && *parentID > 0 {
+				builder.SetParentID(*parentID)
+			}
+			if meta := mergeMenuMeta(exist.Meta, m.Meta); meta != nil {
+				builder.SetMeta(meta)
 			}
 			if err := builder.Exec(ctx); err != nil {
 				r.log.Errorf(ctx, "merge update menu failed, path: %s, err: %s", fullPath, err.Error())
@@ -540,6 +545,24 @@ func (r *MenuRepo) syncMergeTree(
 		}
 	}
 	return count, nil
+}
+
+// mergeMenuMeta 同步时合并已有菜单的 meta：库里已有的键一律保留（包括显式的 false），
+// 只用代码路由的值补库里没有的键。管理员在页面上改过的设置因此不会被同步覆盖。
+func mergeMenuMeta(existing, incoming *permissionV1.MenuMeta) *permissionV1.MenuMeta {
+	if incoming == nil {
+		return existing
+	}
+	out := proto.Clone(incoming).(*permissionV1.MenuMeta)
+	if existing == nil {
+		return out
+	}
+	dst := out.ProtoReflect()
+	proto.Clone(existing).ProtoReflect().Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+		dst.Set(fd, v)
+		return true
+	})
+	return out
 }
 
 // joinMenuFullPath 计算菜单全路径：子节点相对路径拼在父全路径后，绝对路径子节点按绝对处理

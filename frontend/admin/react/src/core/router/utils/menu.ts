@@ -55,8 +55,10 @@ export const transformRoutesToMenu = (
         order: route.meta?.order, // 提取排序字段
       };
 
-      // 隐藏子菜单：目录本身留在菜单里，点进去走它的重定向
-      if (route.children && !route.meta?.hideChildrenInMenu) {
+      // 隐藏子菜单：目录本身留在菜单里，点进去走它的重定向；子页面靠 resolveMenuKey 归到这一项高亮
+      if (route.children?.length && route.meta?.hideChildrenInMenu) {
+        menuItem.hideChildrenInMenu = true;
+      } else if (route.children) {
         menuItem.children = transformRoutesToMenu(route.children, permissions, { parentPath: fullPath, checkAuthority });
       }
 

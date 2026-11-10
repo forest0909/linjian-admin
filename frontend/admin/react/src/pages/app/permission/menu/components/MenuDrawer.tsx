@@ -118,7 +118,7 @@ const MenuDrawer: React.FC<MenuDrawerProps> = ({ open, mode, data, onClose, onSu
 
     try {
       // 只带当前渲染的表单项：按类型隐藏的字段（如目录的组件路径）不能进 updateMask，否则会被清空
-      const payload = formValuesToMenu(values);
+      const payload = formValuesToMenu(values, mode === 'edit' ? data?.type : undefined);
 
       if (mode === 'create') {
         await createMutation.mutateAsync({ data: payload as any });

@@ -183,6 +183,8 @@ async function routeToMenu(
           hideInMenu: meta.hideInMenu,
           hideChildrenInMenu: meta.hideChildrenInMenu,
           hideInTab: meta.hideInTab,
+          hideInBreadcrumb: meta.hideInBreadcrumb,
+          activePath: meta.activePath,
           keepAlive: meta.keepAlive,
           affixTab: meta.affixTab,
           authority: meta.authority,
