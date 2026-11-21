@@ -48,6 +48,9 @@
     "unbindConfirmDesc": "All mini program sessions of this user will be invalidated. Other bound WeChat accounts will sign in again automatically.",
     "unbindSuccess": "Unbound",
     "unbindFailed": "Failed to unbind",
-    "loadFailed": "Failed to load bindings"
+    "loadFailed": "Failed to load bindings",
+    "retryHint": "Unbind did not fully complete: the binding may be deleted but mini program sessions were not all revoked, so old sessions may stay valid until they expire. Please retry.",
+    "retry": "Retry unbind",
+    "dismiss": "Dismiss"
   }
 }

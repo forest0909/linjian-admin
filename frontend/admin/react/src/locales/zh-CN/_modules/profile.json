@@ -127,6 +127,10 @@
     "smsNotConfigured": "未配置短信，请联系管理员修改手机号",
     "phoneHint": "手机号是小程序登录凭证。更换后，已绑定的微信将全部解绑，小程序需重新登录。",
     "mobileHint": "手机号不能在此直接修改，请到「账号绑定」页通过短信验证码更换",
-    "phoneUnbound": "未绑定"
+    "phoneUnbound": "未绑定",
+    "phoneUnchanged": "新号码与当前手机号相同，无需更换",
+    "phonePartial": "手机号已更新，但小程序会话撤销未完成，旧会话可能在过期前仍可使用。请联系管理员处理",
+    "resend": "重新发送",
+    "resendIn": "{{seconds}} 秒后重发"
   }
 }

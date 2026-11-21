@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { List, Button, Drawer, Form, Input, App, Alert } from 'antd';
 import { MailOutlined, MobileOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
@@ -8,12 +8,8 @@ import { useGetUserProfile } from '@/api/hooks/user-profile';
 import { useDrawerCloseGuard } from '@/components/common/use-drawer-close-guard';
 
 const ICON_STYLE = { fontSize: 40 };
-
-// 与后端号码规范一致：去首尾空格和 +86 前缀后必须是 1[3-9] 开头的 11 位数字
-const normalizePhone = (raw: string) => raw.trim().replace(/^\+86/, '');
-const PHONE_RE = /^1[3-9]\d{9}$/;
-
-type BindKind = 'email' | 'phone';
+// 重发冷却（秒）。服务端另有额度，超限的反馈照常展示
+const RESEND_COOLDOWN = 60;
 
 const maskEmail = (email: string) => {
   const at = email.lastIndexOf('@');
@@ -26,6 +22,12 @@ const maskPhone = (phone: string) => {
   return `${phone.slice(0, 3)}****${phone.slice(-4)}`;
 };
 
+// 与后端号码规范一致：去首尾空格和 +86 前缀后必须是 1[3-9] 开头的 11 位数字
+const normalizePhone = (raw: string) => raw.trim().replace(/^\+86/, '');
+const PHONE_RE = /^1[3-9]\d{9}$/;
+
+type BindKind = 'email' | 'phone';
+
 const AccountBind = () => {
   const { t } = useTranslation(['profile', 'common']);
   const { message } = App.useApp();
@@ -36,12 +38,27 @@ const AccountBind = () => {
   const [bindKind, setBindKind] = useState<BindKind>('email');
   // 发验证码返回 NOT_IMPLEMENTED：没配短信渠道，只能找管理员代改
   const [smsUnavailable, setSmsUnavailable] = useState(false);
+  // 抽屉实例号：每次打开和关闭都加一。异步结果只在发起时的实例仍是当前实例时才改局部状态
+  const instanceRef = useRef(0);
+  const closeDrawer = useCallback(() => {
+    instanceRef.current += 1;
+    setBindOpen(false);
+  }, []);
   // 关闭守卫：遮罩/ESC/X/取消统一，脏数据先确认（docs/form_drawer_close_guard.md）
-  const { guardClose, handleValuesChange } = useDrawerCloseGuard(bindOpen, () => setBindOpen(false));
+  const { guardClose, handleValuesChange } = useDrawerCloseGuard(bindOpen, closeDrawer);
   const [bindForm] = Form.useForm();
-  const [codeSent, setCodeSent] = useState(false);
+  const codeValue = Form.useWatch('code', bindForm);
+  // 验证码实际发往的收件地址（规范化后）；收件地址改了，验证码作废
+  const [sentTarget, setSentTarget] = useState<string | null>(null);
+  const [cooldown, setCooldown] = useState(0);
   const [sending, setSending] = useState(false);
   const [verifying, setVerifying] = useState(false);
+
+  useEffect(() => {
+    if (cooldown <= 0) return undefined;
+    const timer = setTimeout(() => setCooldown((c) => c - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [cooldown]);
 
   const bindList = [
     {
@@ -63,75 +80,118 @@ const AccountBind = () => {
   ];
 
   const openBind = (kind: BindKind) => {
+    instanceRef.current += 1;
     setBindKind(kind);
     bindForm.resetFields();
     bindForm.setFieldsValue(kind === 'email' ? { email: user?.email ?? '' } : { phone: '' });
-    setCodeSent(false);
+    setSentTarget(null);
+    setCooldown(0);
     setSmsUnavailable(false);
+    setSending(false);
+    setVerifying(false);
     setBindOpen(true);
   };
 
-  const handleSendCode = async () => {
-    const isPhone = bindKind === 'phone';
-    const values = await bindForm.validateFields([isPhone ? 'phone' : 'email']);
-    setSending(true);
-    try {
-      if (isPhone) {
-        await apiClient.userProfileService.BindContact({
-          phone: { phone: normalizePhone(values.phone), code: undefined },
-        });
-      } else {
-        const email = values.email?.trim();
-        if (!email) {
-          message.error(t('accountBind.newEmailRequired'));
-          return;
-        }
-        await apiClient.userProfileService.BindContact({ email: { email } });
-      }
-      setCodeSent(true);
-      message.success(t('accountBind.codeSent'));
-    } catch (error: any) {
-      console.error('Failed to send bind code:', error);
-      if (isPhone && error?.reason === 'NOT_IMPLEMENTED') {
-        setSmsUnavailable(true);
-      } else {
-        message.error(error?.message || t('accountBind.vcodeSendFailed'));
-      }
-    } finally {
-      setSending(false);
+  const targetField = bindKind === 'phone' ? 'phone' : 'email';
+  const normalizeTarget = (raw: unknown) =>
+    bindKind === 'phone' ? normalizePhone(String(raw ?? '')) : String(raw ?? '').trim();
+
+  // 收件地址改了：之前发出的验证码对新地址无效，清掉输入并允许立即重发
+  const handleFormValuesChange = (changed: Record<string, unknown>) => {
+    handleValuesChange();
+    if (targetField in changed && sentTarget !== null && normalizeTarget(changed[targetField]) !== sentTarget) {
+      bindForm.setFieldValue('code', '');
+      setSentTarget(null);
+      setCooldown(0);
     }
   };
 
-  const handleVerify = async () => {
+  const handleSendCode = async () => {
+    let values: Record<string, string>;
+    try {
+      values = await bindForm.validateFields([targetField]);
+    } catch (error) {
+      // 字段校验失败：antd 已就地标红，这里只留日志
+      console.error('Bind contact form validation failed:', error);
+      return;
+    }
+    const instance = instanceRef.current;
     const isPhone = bindKind === 'phone';
-    const values = await bindForm.validateFields();
+    const target = normalizeTarget(values[targetField]);
+    setSending(true);
+    try {
+      if (isPhone) {
+        await apiClient.userProfileService.BindContact({ phone: { phone: target, code: undefined } });
+      } else {
+        await apiClient.userProfileService.BindContact({ email: { email: target } });
+      }
+      if (instance !== instanceRef.current) return;
+      setSentTarget(target);
+      setCooldown(RESEND_COOLDOWN);
+      message.success(t('accountBind.codeSent'));
+    } catch (error: any) {
+      console.error('Failed to send bind code:', error);
+      if (instance !== instanceRef.current) return;
+      if (isPhone && error?.reason === 'NOT_IMPLEMENTED') {
+        setSmsUnavailable(true);
+      } else {
+        // 含服务端限流反馈
+        message.error(error?.message || t('accountBind.vcodeSendFailed'));
+      }
+    } finally {
+      if (instance === instanceRef.current) setSending(false);
+    }
+  };
+
+  const handleFinish = async (values: Record<string, string>) => {
+    const instance = instanceRef.current;
+    const isPhone = bindKind === 'phone';
+    const target = normalizeTarget(values[targetField]);
     const code = values.code?.trim();
-    if (!code) {
+    const oldMobile = user?.mobile ?? '';
+    if (isPhone && target === oldMobile) {
+      // 与库里存的值完全一致：后端不会有任何改动。库里是带区号/空格的旧格式时，
+      // 规范值和存储值不同，仍可提交，用来把它清洗成标准格式
+      message.info(t('accountBind.phoneUnchanged'));
+      return;
+    }
+    if (sentTarget !== target) {
       message.error(t('accountBind.vcodeRequired'));
       return;
     }
     setVerifying(true);
     try {
       if (isPhone) {
-        await apiClient.userProfileService.VerifyContact({
-          phone: { phone: normalizePhone(values.phone), code },
-        });
+        await apiClient.userProfileService.VerifyContact({ phone: { phone: target, code } });
       } else {
-        await apiClient.userProfileService.VerifyContact({
-          email: { email: values.email?.trim(), code },
-        });
+        await apiClient.userProfileService.VerifyContact({ email: { email: target, code } });
       }
+      // 后台已写入：无论抽屉还在不在，都刷新资料（本页和顶栏头像都读 getMe）
+      await queryClient.refetchQueries({ queryKey: ['getMe'] });
+      if (instance !== instanceRef.current) return;
       message.success(isPhone ? t('accountBind.phoneBindSuccess') : t('accountBind.bindSuccess'));
-      setBindOpen(false);
-      // 刷新用户信息以更新绑定状态展示（本页读 getMe，顶栏头像等也读 getMe）
-      queryClient.invalidateQueries({ queryKey: ['getMe'] });
+      closeDrawer();
     } catch (error: any) {
       console.error('Failed to verify bind code:', error);
-      message.error(error?.message || t('accountBind.bindFailed'));
+      // 改号先落库再撤销会话：Redis 失败时接口返回 503，但号码可能已经改了。回读判断
+      await queryClient.refetchQueries({ queryKey: ['getMe'] }).catch((e) => {
+        console.error('Failed to refresh profile after bind error:', e);
+      });
+      if (instance !== instanceRef.current) return;
+      const latest = queryClient.getQueryData<{ mobile?: string }>(['getMe']);
+      if (isPhone && latest?.mobile === target && target !== oldMobile) {
+        message.warning(t('accountBind.phonePartial'), 8);
+        closeDrawer();
+      } else {
+        message.error(error?.message || t('accountBind.bindFailed'));
+      }
     } finally {
-      setVerifying(false);
+      if (instance === instanceRef.current) setVerifying(false);
     }
   };
+
+  const phoneKind = bindKind === 'phone';
+  const resendDisabled = sending || cooldown > 0 || smsUnavailable;
 
   return (
     <>
@@ -151,36 +211,39 @@ const AccountBind = () => {
               ),
             ]}
           >
-            <List.Item.Meta
-              avatar={item.icon}
-              title={item.title}
-              description={item.description}
-            />
+            <List.Item.Meta avatar={item.icon} title={item.title} description={item.description} />
           </List.Item>
         )}
       />
 
       <Drawer
-        title={bindKind === 'phone' ? t('accountBind.bindPhoneTitle') : t('accountBind.bindEmailTitle')}
+        title={phoneKind ? t('accountBind.bindPhoneTitle') : t('accountBind.bindEmailTitle')}
         open={bindOpen}
         onClose={guardClose}
-        width={480}
-        destroyOnClose
+        size={480}
+        destroyOnHidden
         footer={
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
             <Button onClick={guardClose}>{t('common:button.cancel')}</Button>
-            <Button type="primary" loading={verifying} disabled={smsUnavailable} onClick={handleVerify}>
+            <Button type="primary" loading={verifying} disabled={smsUnavailable} onClick={() => bindForm.submit()}>
               {t('common:button.ok')}
             </Button>
           </div>
         }
       >
-        <Form form={bindForm} layout="horizontal" labelCol={{ flex: '0 0 120px' }} wrapperCol={{ flex: 'auto' }} onValuesChange={handleValuesChange}>
-          {bindKind === 'phone' ? (
+        <Form
+          form={bindForm}
+          layout="horizontal"
+          labelCol={{ flex: '0 0 120px' }}
+          wrapperCol={{ flex: 'auto' }}
+          onValuesChange={handleFormValuesChange}
+          onFinish={handleFinish}
+        >
+          {phoneKind ? (
             <>
-              <Alert type="info" showIcon style={{ marginBottom: 16 }} message={t('accountBind.phoneHint')} />
+              <Alert type="info" showIcon style={{ marginBottom: 16 }} title={t('accountBind.phoneHint')} />
               {smsUnavailable && (
-                <Alert type="warning" showIcon style={{ marginBottom: 16 }} message={t('accountBind.smsNotConfigured')} />
+                <Alert type="warning" showIcon style={{ marginBottom: 16 }} title={t('accountBind.smsNotConfigured')} />
               )}
               <Form.Item
                 name="phone"
@@ -213,9 +276,20 @@ const AccountBind = () => {
             rules={[{ required: true, message: t('accountBind.vcodeRequired') }]}
           >
             <div style={{ display: 'flex', gap: 8 }}>
-              <Input placeholder={bindKind === 'phone' ? t('accountBind.phoneVcodePlaceholder') : t('accountBind.vcodePlaceholder')} />
-              <Button disabled={codeSent || smsUnavailable} loading={sending} onClick={handleSendCode}>
-                {codeSent ? t('accountBind.codeSent') : t('accountBind.sendVcode')}
+              <Input
+                placeholder={phoneKind ? t('accountBind.phoneVcodePlaceholder') : t('accountBind.vcodePlaceholder')}
+                value={codeValue ?? ''}
+                onChange={(e) => {
+                  handleValuesChange();
+                  bindForm.setFieldValue('code', e.target.value);
+                }}
+              />
+              <Button disabled={resendDisabled} loading={sending} onClick={handleSendCode}>
+                {cooldown > 0
+                  ? t('accountBind.resendIn', { seconds: cooldown })
+                  : sentTarget !== null
+                    ? t('accountBind.resend')
+                    : t('accountBind.sendVcode')}
               </Button>
             </div>
           </Form.Item>

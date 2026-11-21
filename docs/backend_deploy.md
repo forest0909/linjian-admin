@@ -351,7 +351,7 @@ server:
 | `GWA_WECHAT_MINIAPP_APP_SECRET` | 小程序 Secret，优先于 `wechat.yaml`。**生产用环境变量注入，不要写进提交的 yaml** |
 
 - Compose 部署：这两个变量加进 `backend/.env`，并在 `docker-compose.yaml` 的 `admin-service` 的 `environment` 里透传；或用 `configs/local/wechat.yaml` 覆盖层（`.env` 之外的配置走挂载，见「配置覆盖」）。
-- 配了 `app_id` 没配 `app_secret` 启动报错；文件存在但解析失败启动报错。启动时读一次，改了要重启。
+- 配了 `app_id` 没配 `app_secret` 启动报错（开着 mock 的开发构建除外）；文件存在但解析失败启动报错。开发用环境变量 `GWA_WECHAT_MINIAPP_MOCK` 也能打开 mock，同样只在带 `miniapp_mock` 标签的构建里有效。启动时读一次，改了要重启。
 - **多实例开启顺序**：先让所有实例升级到能识别令牌 `ct` 声明的版本，再填 `app_id`。
 - **mock 不能进生产**：`wechat.yaml` 的 `mock: true` 只在带 `miniapp_mock` 编译标签的开发构建里有效。正式制品（`make build`、Docker 镜像）不带这个标签，读到 `mock: true` 会拒绝启动。`run-miniapp-mock` 构建只连本机的开发库和开发 Redis。
 - 后端要能访问微信服务端 `api.weixin.qq.com`（`jscode2session`、`getuserphonenumber`、`stable_token`），超时 5 秒。access_token 缓存在 Redis 的 `gowind:wechat:miniapp:access_token:{appid}`。
