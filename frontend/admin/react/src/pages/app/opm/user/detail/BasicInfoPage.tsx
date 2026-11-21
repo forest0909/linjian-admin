@@ -7,6 +7,7 @@ import { getCharColor, getRandomColor } from '@/utils/color';
 import { formatDateTime } from '@/utils/date';
 import { useUserStore } from '@/stores/user';
 import { isFieldHidden } from '@/core/access';
+import MiniappBindingCard from './MiniappBindingCard';
 
 interface BasicInfoPageProps {
   userId: number | undefined;
@@ -121,6 +122,8 @@ const BasicInfoPage: React.FC<BasicInfoPageProps> = ({ userId }) => {
           </Descriptions.Item>
         )}
       </Descriptions>
+
+      <MiniappBindingCard userId={userId} />
     </div>
   );
 };

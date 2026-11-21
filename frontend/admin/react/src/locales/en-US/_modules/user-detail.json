@@ -36,5 +36,18 @@
   "confirmPasswordPlaceholder": "Re-enter new password",
   "passwordMismatch": "Passwords do not match",
   "editPasswordSuccess": "Password changed successfully",
-  "editPasswordFailed": "Failed to change password"
+  "editPasswordFailed": "Failed to change password",
+  "miniapp": {
+    "title": "WeChat Mini Program Bindings",
+    "empty": "No bindings",
+    "openid": "WeChat ID",
+    "createdAt": "Bound At",
+    "action": "Actions",
+    "unbind": "Unbind",
+    "unbindConfirmTitle": "Confirm unbind",
+    "unbindConfirmDesc": "All mini program sessions of this user will be invalidated. Other bound WeChat accounts will sign in again automatically.",
+    "unbindSuccess": "Unbound",
+    "unbindFailed": "Failed to unbind",
+    "loadFailed": "Failed to load bindings"
+  }
 }

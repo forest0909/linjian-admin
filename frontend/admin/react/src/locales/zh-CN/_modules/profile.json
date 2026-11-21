@@ -114,6 +114,19 @@
     "newEmailRequired": "请输入新邮箱地址",
     "vcodeRequired": "请输入验证码",
     "bindSuccess": "邮箱绑定成功",
-    "bindFailed": "绑定失败"
+    "bindFailed": "绑定失败",
+    "phoneBindNow": "绑定手机",
+    "phoneRebind": "更换手机",
+    "bindPhoneTitle": "绑定手机",
+    "newPhone": "新手机号",
+    "newPhonePlaceholder": "请输入 11 位大陆手机号",
+    "newPhoneRequired": "请输入新手机号",
+    "newPhoneInvalid": "手机号格式不正确",
+    "phoneVcodePlaceholder": "请输入短信验证码",
+    "phoneBindSuccess": "手机号已更新，微信小程序需重新登录",
+    "smsNotConfigured": "未配置短信，请联系管理员修改手机号",
+    "phoneHint": "手机号是小程序登录凭证。更换后，已绑定的微信将全部解绑，小程序需重新登录。",
+    "mobileHint": "手机号不能在此直接修改，请到「账号绑定」页通过短信验证码更换",
+    "phoneUnbound": "未绑定"
   }
 }
