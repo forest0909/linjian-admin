@@ -5,12 +5,18 @@ import { defineConfig } from 'vitest/config'
 export default defineConfig({
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, 'src'),
+      '@': path.resolve(import.meta.dirname, 'src'),
     },
   },
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts'],
-    passWithNoTests: true,
+    env: {
+      NODE_ENV: 'test',
+      TARO_ENV: 'weapp',
+      TARO_APP_API_BASE: '',
+      TARO_APP_AES_KEY: 'f51d66a73d8a0927',
+      TARO_APP_WECHAT_MOCK: 'false',
+    },
   },
 })

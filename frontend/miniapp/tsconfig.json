@@ -19,6 +19,6 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["./src", "./types", "./config", "./vitest.config.ts"],
+  "include": ["./src", "./types", "./config"],
   "compileOnSave": false
 }
