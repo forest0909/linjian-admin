@@ -186,6 +186,7 @@ func NewRestServer(
 	auditExportService *service.AuditExportService,
 	configService *service.ConfigService,
 	externalDemoContactService *service.ExternalDemoContactService,
+	miniappAuthService *service.MiniappAuthService,
 ) (*http.Server, error) {
 	cfg := ctx.GetConfig()
 
@@ -207,6 +208,7 @@ func NewRestServer(
 	apiService.RegisterRouteWalker(srv)
 
 	adminV1.RegisterAuthenticationServiceHTTPServer(srv, authenticationService)
+	adminV1.RegisterMiniappAuthServiceHTTPServer(srv, miniappAuthService)
 
 	adminV1.RegisterUserProfileServiceHTTPServer(srv, userProfileService)
 
