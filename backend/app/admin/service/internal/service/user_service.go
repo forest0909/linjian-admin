@@ -598,10 +598,9 @@ func (s *UserService) Update(ctx context.Context, req *identityV1.UpdateUserRequ
 	}
 
 	// 号码变了：旧号码建立的小程序会话不能再用，吊销该用户的 app 令牌。
-	// 请求里的号码和库里一致时也照做一遍（幂等）：上一次改号已提交但 Redis 吊销失败，
-	// 原样重试就靠这里补上。操作人没有改号权限时不做，免得借此踢掉高权限账号的会话。
+	// 号码和库里一致（没有实际变化）时什么都不做。
 	appRevokeFailed := false
-	if outcome.MobileChanged || (outcome.MobileRequested && credentialCeilingErr == nil) {
+	if outcome.MobileChanged {
 		if rerr := s.authenticator.RevokeUserToken(ctx, authenticationV1.ClientType_app, req.GetId()); rerr != nil {
 			s.log.Errorf(ctx, "revoke app tokens after mobile change failed for user [%d]: %v", req.GetId(), rerr)
 			appRevokeFailed = true
@@ -664,8 +663,8 @@ func (s *UserService) Update(ctx context.Context, req *identityV1.UpdateUserRequ
 	}
 
 	if appRevokeFailed {
-		// 号码已经改了，但旧的小程序令牌没清干净。返回 503，原样再提交一次即可完成吊销。
-		return nil, adminV1.ErrorServiceUnavailable("mobile updated but session revocation failed, please retry")
+		// 号码已经改了，但旧的小程序令牌没清干净：已签发的 app 令牌在自己的有效期内还能用。
+		return nil, adminV1.ErrorServiceUnavailable("mobile updated but session revocation failed")
 	}
 
 	return &emptypb.Empty{}, nil

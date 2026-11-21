@@ -424,9 +424,10 @@ func TestVerifyContact_Phone(t *testing.T) {
 		require.NotContains(t, err.Error(), newMobile, "返回给前端的错误不带联系方式")
 	})
 
-	t.Run("新旧号码相同：数据库不动", func(t *testing.T) {
+	t.Run("新旧号码相同：什么都不做，会话也不动", func(t *testing.T) {
 		e := newCredWriteEnv(t)
 		id := e.seedUser(t, "self", oldMobile)
+		appAT := e.issue(t, authenticationV1.ClientType_app, id)
 		before := e.client.User.GetX(e.sys, id).UpdatedAt
 		code := requestCode(t, e, id, oldMobile)
 		_, err := e.profile.VerifyContact(e.selfCtx(id), verifyPhoneReq(oldMobile, code))
@@ -435,9 +436,10 @@ func TestVerifyContact_Phone(t *testing.T) {
 		require.Equal(t, before, e.client.User.GetX(e.sys, id).UpdatedAt)
 		require.Zero(t, e.client.UserCredential.Query().
 			Where(usercredential.UserIDEQ(id), usercredential.IdentityTypeEQ(usercredential.IdentityTypePhone)).CountX(e.sys))
+		require.True(t, e.tokenValid(appAT))
 	})
 
-	t.Run("吊销失败返回 503，重新验证同一个号码后旧 app 令牌失效", func(t *testing.T) {
+	t.Run("吊销失败返回 503，数据库已提交", func(t *testing.T) {
 		e := newCredWriteEnv(t)
 		id := e.seedUser(t, "self", oldMobile)
 		appAT := e.issue(t, authenticationV1.ClientType_app, id)
@@ -447,14 +449,8 @@ func TestVerifyContact_Phone(t *testing.T) {
 		_, err := e.profile.VerifyContact(e.selfCtx(id), verifyPhoneReq(newMobile, code))
 		require.True(t, authenticationV1.IsServiceUnavailable(err), "got %v", err)
 		require.Equal(t, newMobile, e.mobile(t, id), "数据库已提交")
-		require.True(t, e.tokenValid(appAT), "没删掉的令牌在这期间仍能用")
-
-		e.fault.set(nil)
-		// 验证码已消费，要重新申请一枚（这里直接写入，跳过一分钟的发送间隔），再验证同一个号码。
-		require.NoError(t, e.profile.vcodeCache.SaveForUser(context.Background(), id, bindContactPurpose, newMobile, "135790", bindContactCodeTTL))
-		_, err = e.profile.VerifyContact(e.selfCtx(id), verifyPhoneReq(newMobile, "135790"))
-		require.NoError(t, err)
-		require.False(t, e.tokenValid(appAT))
+		// 接受的残留：没删掉的令牌在自己的有效期内仍能用。
+		require.True(t, e.tokenValid(appAT))
 	})
 }
 
@@ -527,7 +523,7 @@ func TestAdminCredentialWrite_PrivilegeCeiling(t *testing.T) {
 			require.Equal(t, oldMobile, f.e.mobile(t, f.target))
 			require.Equal(t, "nick-"+mobile, f.e.nickname(t, f.target))
 		}
-		require.True(t, f.e.tokenValid(appAT), "没有改号权限的操作者不能借原样提交踢掉高权限账号的小程序会话")
+		require.True(t, f.e.tokenValid(appAT), "号码没有实际变化，会话不动")
 	})
 
 	t.Run("独立重置密码被拒", func(t *testing.T) {
@@ -596,55 +592,51 @@ func TestAdminCredentialWrite_PrivilegeCeiling(t *testing.T) {
 	})
 }
 
-// 管理员改号之后 app 会话失效、管理端会话不动；Redis 吊销失败返回 503，原样重试完成吊销。
-func TestAdminMobileChange_RevokesAppSessionsAndRetries(t *testing.T) {
+// 管理员改号之后 app 会话失效、管理端会话不动；号码没有实际变化时什么都不做。
+func TestAdminMobileChange_RevokesAppSessions(t *testing.T) {
 	e := newCredWriteEnv(t)
 	role := e.userSvcEn.seedRoleWithPerms(t, "CRED_ANY", []uint32{11})
 	operator := e.seedUser(t, "operator", "13700000007", role)
 	target := e.seedUser(t, "target", "13800000001", role)
 	ctx := opCtx(e.sys, operator, 0, true)
 
-	appAT := e.issue(t, authenticationV1.ClientType_app, target)
-	adminAT := e.issue(t, authenticationV1.ClientType_admin, target)
-	req := func() *identityV1.UpdateUserRequest {
-		return &identityV1.UpdateUserRequest{
-			Id:         target,
-			Data:       &identityV1.User{Mobile: trans.Ptr("13900000002"), RoleIds: []uint32{role}},
-			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"mobile"}},
-		}
+	update := func(data *identityV1.User, paths ...string) error {
+		data.RoleIds = []uint32{role}
+		_, err := e.users.Update(ctx, &identityV1.UpdateUserRequest{
+			Id: target, Data: data, UpdateMask: &fieldmaskpb.FieldMask{Paths: paths},
+		})
+		return err
 	}
 
-	// 首次：数据库提交了，Redis 删除 app 令牌失败。
-	e.fault.set(func(name, key string) bool { return name == "del" && strings.HasPrefix(key, "at:1:") })
-	_, err := e.users.Update(ctx, req())
-	require.True(t, adminV1.IsServiceUnavailable(err), "got %v", err)
+	// 改号：app 会话失效，管理端会话不动。
+	appAT := e.issue(t, authenticationV1.ClientType_app, target)
+	adminAT := e.issue(t, authenticationV1.ClientType_admin, target)
+	require.NoError(t, update(&identityV1.User{Mobile: trans.Ptr("13900000002")}, "mobile"))
 	require.Equal(t, "13900000002", e.mobile(t, target))
-	require.True(t, e.tokenValid(appAT), "没删掉的令牌在这期间仍能用")
+	require.False(t, e.tokenValid(appAT))
+	require.True(t, e.tokenValid(adminAT))
 
-	// 原样重试：号码已经一致，照样执行一遍吊销。
+	// 号码和库里一致、掩码回传：都不算变更，app 会话不动。
+	appAT = e.issue(t, authenticationV1.ClientType_app, target)
+	require.NoError(t, update(&identityV1.User{Mobile: trans.Ptr("13900000002"), Nickname: trans.Ptr("n1")}, "mobile", "nickname"))
+	require.NoError(t, update(&identityV1.User{Mobile: trans.Ptr("139****0002"), Nickname: trans.Ptr("n2")}, "mobile", "nickname"))
+	require.Equal(t, "13900000002", e.mobile(t, target))
+	require.Equal(t, "n2", e.nickname(t, target))
+	require.True(t, e.tokenValid(appAT))
+
+	// Redis 删除 app 令牌失败：数据库已提交，接口返回 503；没删掉的令牌在有效期内仍能用（接受的残留）。
+	e.fault.set(func(name, key string) bool { return name == "del" && strings.HasPrefix(key, "at:1:") })
+	err := update(&identityV1.User{Mobile: trans.Ptr("13900000003")}, "mobile")
+	require.True(t, adminV1.IsServiceUnavailable(err), "got %v", err)
+	require.Equal(t, "13900000003", e.mobile(t, target))
+	require.True(t, e.tokenValid(appAT))
+	// 原样重试：号码已经一致，直接成功，什么都不做。
 	e.fault.set(nil)
-	_, err = e.users.Update(ctx, req())
-	require.NoError(t, err)
-	require.False(t, e.tokenValid(appAT), "重试后旧 app 令牌被拒绝")
-	require.True(t, e.tokenValid(adminAT), "管理端会话不受改号影响")
+	require.NoError(t, update(&identityV1.User{Mobile: trans.Ptr("13900000003")}, "mobile"))
+	require.True(t, e.tokenValid(appAT))
 
 	// 清空号码同样吊销 app 会话。
-	appAT2 := e.issue(t, authenticationV1.ClientType_app, target)
-	_, err = e.users.Update(ctx, &identityV1.UpdateUserRequest{
-		Id: target, Data: &identityV1.User{RoleIds: []uint32{role}}, UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"mobile"}},
-	})
-	require.NoError(t, err)
+	require.NoError(t, update(&identityV1.User{}, "mobile"))
 	require.Equal(t, "", e.mobile(t, target))
-	require.False(t, e.tokenValid(appAT2))
-
-	// 掩码回传不算写手机号：app 会话不动。
-	require.NoError(t, e.client.User.UpdateOneID(target).SetMobile("13800000001").Exec(e.sys))
-	appAT3 := e.issue(t, authenticationV1.ClientType_app, target)
-	_, err = e.users.Update(ctx, &identityV1.UpdateUserRequest{
-		Id:         target,
-		Data:       &identityV1.User{Mobile: trans.Ptr("138****0001"), Nickname: trans.Ptr("n"), RoleIds: []uint32{role}},
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"mobile", "nickname"}},
-	})
-	require.NoError(t, err)
-	require.True(t, e.tokenValid(appAT3))
+	require.False(t, e.tokenValid(appAT))
 }

@@ -66,35 +66,34 @@ func TestUserRepoUpdateGuarded_MobileWrite(t *testing.T) {
 	const oldMobile = "13800000001"
 
 	cases := []struct {
-		name          string
-		data          *identityV1.User
-		mask          []string
-		wantRequested bool
-		wantChanged   bool
-		wantMobile    string
-		wantNickname  string
+		name         string
+		data         *identityV1.User
+		mask         []string
+		wantChanged  bool
+		wantMobile   string
+		wantNickname string
 	}{
 		{
-			name:          "带 mask 改号",
-			data:          &identityV1.User{Mobile: trans.Ptr("13900000002")},
-			mask:          []string{"mobile"},
-			wantRequested: true, wantChanged: true, wantMobile: "13900000002", wantNickname: "old-nick",
+			name:        "带 mask 改号",
+			data:        &identityV1.User{Mobile: trans.Ptr("13900000002")},
+			mask:        []string{"mobile"},
+			wantChanged: true, wantMobile: "13900000002", wantNickname: "old-nick",
 		},
 		{
-			name:          "不带 mask 的全量请求改号",
-			data:          &identityV1.User{Mobile: trans.Ptr("13900000002"), Nickname: trans.Ptr("new-nick")},
-			wantRequested: true, wantChanged: true, wantMobile: "13900000002", wantNickname: "new-nick",
+			name:        "不带 mask 的全量请求改号",
+			data:        &identityV1.User{Mobile: trans.Ptr("13900000002"), Nickname: trans.Ptr("new-nick")},
+			wantChanged: true, wantMobile: "13900000002", wantNickname: "new-nick",
 		},
 		{
-			name:          "带 mask 清空（值为空指针）",
-			data:          &identityV1.User{},
-			mask:          []string{"mobile"},
-			wantRequested: true, wantChanged: true, wantMobile: "", wantNickname: "old-nick",
+			name:        "带 mask 清空（值为空指针）",
+			data:        &identityV1.User{},
+			mask:        []string{"mobile"},
+			wantChanged: true, wantMobile: "", wantNickname: "old-nick",
 		},
 		{
-			name:          "不带 mask 清空（空串）",
-			data:          &identityV1.User{Mobile: trans.Ptr("")},
-			wantRequested: true, wantChanged: true, wantMobile: "", wantNickname: "old-nick",
+			name:        "不带 mask 清空（空串）",
+			data:        &identityV1.User{Mobile: trans.Ptr("")},
+			wantChanged: true, wantMobile: "", wantNickname: "old-nick",
 		},
 		{
 			name:         "掩码原样回传不算变更",
@@ -110,16 +109,16 @@ func TestUserRepoUpdateGuarded_MobileWrite(t *testing.T) {
 			wantNickname: "new-nick",
 		},
 		{
-			name:          "号码没变",
-			data:          &identityV1.User{Mobile: trans.Ptr(oldMobile), Nickname: trans.Ptr("new-nick")},
-			mask:          []string{"mobile", "nickname"},
-			wantRequested: true, wantMobile: oldMobile, wantNickname: "new-nick",
+			name:       "号码没变",
+			data:       &identityV1.User{Mobile: trans.Ptr(oldMobile), Nickname: trans.Ptr("new-nick")},
+			mask:       []string{"mobile", "nickname"},
+			wantMobile: oldMobile, wantNickname: "new-nick",
 		},
 		{
-			name:          "带 +86 和空格的同一个号码不算变更",
-			data:          &identityV1.User{Mobile: trans.Ptr(" +86" + oldMobile + " ")},
-			mask:          []string{"mobile"},
-			wantRequested: true, wantMobile: oldMobile, wantNickname: "old-nick",
+			name:       "带 +86 和空格的同一个号码不算变更",
+			data:       &identityV1.User{Mobile: trans.Ptr(" +86" + oldMobile + " ")},
+			mask:       []string{"mobile"},
+			wantMobile: oldMobile, wantNickname: "old-nick",
 		},
 		{
 			name:         "mask 里没有 mobile 时不写",
@@ -129,10 +128,10 @@ func TestUserRepoUpdateGuarded_MobileWrite(t *testing.T) {
 			wantNickname: "new-nick",
 		},
 		{
-			name:          "新号码收成 11 位纯数字再落库",
-			data:          &identityV1.User{Mobile: trans.Ptr("+8613900000002")},
-			mask:          []string{"mobile"},
-			wantRequested: true, wantChanged: true, wantMobile: "13900000002", wantNickname: "old-nick",
+			name:        "新号码收成 11 位纯数字再落库",
+			data:        &identityV1.User{Mobile: trans.Ptr("+8613900000002")},
+			mask:        []string{"mobile"},
+			wantChanged: true, wantMobile: "13900000002", wantNickname: "old-nick",
 		},
 	}
 
@@ -155,7 +154,6 @@ func TestUserRepoUpdateGuarded_MobileWrite(t *testing.T) {
 				return nil
 			})
 			require.NoError(t, err)
-			require.Equal(t, tc.wantRequested, outcome.MobileRequested, "MobileRequested")
 			require.Equal(t, tc.wantChanged, outcome.MobileChanged, "MobileChanged")
 			if tc.wantChanged {
 				require.Equal(t, 1, guardCalls, "号码变更要过 guard")
@@ -227,7 +225,6 @@ func TestUserRepoUpdateGuarded_MobileWrite(t *testing.T) {
 			Id: id, Data: &identityV1.User{Mobile: trans.Ptr("010-12345678"), Nickname: trans.Ptr("new-nick")},
 		}, nil)
 		require.NoError(t, err)
-		require.True(t, outcome.MobileRequested)
 		require.False(t, outcome.MobileChanged)
 		require.Equal(t, "010-12345678", derefString(e.user(t, id).Mobile))
 	})

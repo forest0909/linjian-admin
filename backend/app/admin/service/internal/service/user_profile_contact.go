@@ -208,22 +208,24 @@ func (s *UserProfileService) VerifyContact(ctx context.Context, req *identityV1.
 
 // verifyPhone 验证码通过后的改号。数据库部分在一个事务里（见 BindVerifiedPhone）；
 // 提交后吊销该用户的 app 令牌：旧号码建立的小程序会话不能再用。
-// 新旧号码相同时数据库不动，但吊销照做一遍（幂等），这样上一次吊销失败后重新验证即可补上。
+// 新旧号码相同时直接返回成功，什么都不做。
 func (s *UserProfileService) verifyPhone(ctx context.Context, userID uint32, mobile string) (*emptypb.Empty, error) {
 	changed, err := s.userCredentialRepo.BindVerifiedPhone(ctx, userID, mobile)
 	if err != nil {
 		s.log.Errorf(ctx, "bind contact: change mobile failed for user [%d]: %s", userID, err.Error())
 		return nil, err
 	}
+	if !changed {
+		return &emptypb.Empty{}, nil
+	}
 
 	if err = s.authenticator.RevokeUserToken(ctx, authenticationV1.ClientType_app, userID); err != nil {
+		// 号码已经改了，但旧的小程序令牌没清干净：已签发的 app 令牌在自己的有效期内还能用。
 		s.log.Errorf(ctx, "bind contact: revoke app tokens failed for user [%d]: %v", userID, err)
-		return nil, authenticationV1.ErrorServiceUnavailable("mobile updated but session revocation failed, please retry")
+		return nil, authenticationV1.ErrorServiceUnavailable("mobile updated but session revocation failed")
 	}
 
-	if changed {
-		s.log.Infof(ctx, "user [%d] changed mobile to [%s]", userID, phone.Mask(mobile))
-	}
+	s.log.Infof(ctx, "user [%d] changed mobile to [%s]", userID, phone.Mask(mobile))
 	return &emptypb.Empty{}, nil
 }
 

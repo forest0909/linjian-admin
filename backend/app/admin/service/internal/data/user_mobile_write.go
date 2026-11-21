@@ -30,9 +30,7 @@ type MobileChangeGuard func(ctx context.Context, tx *ent.Tx, userID uint32, newM
 
 // UserUpdateOutcome 一次用户更新里手机号的实际去向。
 type UserUpdateOutcome struct {
-	// MobileRequested 处理完字段屏蔽、mask、掩码回传之后，这次请求仍然要写 mobile。
-	MobileRequested bool
-	// MobileChanged 要写的值和库里的不一样（含清空）。
+	// MobileChanged 处理完字段屏蔽、mask、掩码回传之后，要写的号码和库里的不一样（含清空）。
 	MobileChanged bool
 }
 
@@ -90,7 +88,6 @@ func (r *userRepo) guardMobileWrite(ctx context.Context, tx *ent.Tx, req *identi
 	if !writes {
 		return outcome, nil
 	}
-	outcome.MobileRequested = true
 
 	current, err := lockUserRow(ctx, tx, r.entClient.Driver().Dialect(), req.GetId())
 	if err != nil {
