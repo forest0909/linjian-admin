@@ -14,6 +14,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+
+	"go-wind-admin/pkg/phone"
 )
 
 // kratosRedacter 是 Kratos logging.Server 认的接口：Redact 必须返回脱敏后的字符串。
@@ -43,6 +45,37 @@ var sensitiveProtoFieldNames = map[protoreflect.Name]struct{}{
 	"access_token":   {},
 	"secret":         {},
 	"token":          {},
+}
+
+// contactRedaction 联系方式在日志副本里的处理方式。
+type contactRedaction int
+
+const (
+	redactClear contactRedaction = iota // 清空
+	redactPhone                         // 手机号打码：138****0000
+	redactEmail                         // 邮箱打码：a***@example.com
+)
+
+// contactFieldRedactions 按消息全名登记的 string 字段处理：手机号和邮箱在访问日志里只留打码后的样子。
+// 手机号是登录凭证，改号、发码、管理员改用户资料的请求都带着它。
+// 这些字段名（phone、email、mobile、code）太常见，不能放进上面按字段名匹配的兜底名单。
+var contactFieldRedactions = map[protoreflect.FullName]map[protoreflect.Name]contactRedaction{
+	"identity.service.v1.BindPhoneRequest":  {"phone": redactPhone, "code": redactClear},
+	"identity.service.v1.BindEmailRequest":  {"email": redactEmail, "verification_code": redactClear},
+	"identity.service.v1.PhoneVerification": {"phone": redactPhone},
+	"identity.service.v1.EmailVerification": {"email": redactEmail},
+	"identity.service.v1.User":              {"mobile": redactPhone, "email": redactEmail},
+}
+
+func redactContactValue(kind contactRedaction, value string) string {
+	switch kind {
+	case redactPhone:
+		return phone.Mask(value)
+	case redactEmail:
+		return phone.MaskEmail(value)
+	default:
+		return ""
+	}
 }
 
 // AccessLogServer 是访问日志中间件，替换 Kratos logging.Server。
@@ -140,8 +173,18 @@ func redactSensitiveStrings(m protoreflect.Message) {
 	if redacter, ok := m.Interface().(inPlaceRedacter); ok {
 		redacter.Redact()
 	}
+	contactRules := contactFieldRedactions[m.Descriptor().FullName()]
 	var clear []protoreflect.FieldDescriptor
+	masked := map[protoreflect.FieldDescriptor]string{}
 	m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+		if kind, ok := contactRules[fd.Name()]; ok && fd.Kind() == protoreflect.StringKind && !fd.IsList() && !fd.IsMap() {
+			if kind == redactClear {
+				clear = append(clear, fd)
+			} else {
+				masked[fd] = redactContactValue(kind, v.String())
+			}
+			return true
+		}
 		switch {
 		case fd.IsMap():
 			redactSensitiveMap(fd, v.Map())
@@ -156,6 +199,9 @@ func redactSensitiveStrings(m protoreflect.Message) {
 	})
 	for _, fd := range clear {
 		m.Clear(fd)
+	}
+	for fd, value := range masked {
+		m.Set(fd, protoreflect.ValueOfString(value))
 	}
 }
 

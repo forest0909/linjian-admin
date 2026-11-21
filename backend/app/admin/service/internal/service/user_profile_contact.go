@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net/mail"
 	"strings"
 	"time"
 
@@ -55,6 +56,20 @@ func maskContact(kind, contact string) string {
 	return phone.MaskEmail(contact)
 }
 
+// normalizeContact 发码和验证共用的联系方式规范：手机号收成 11 位纯数字，
+// 邮箱去掉首尾空格、转小写并要求是一个合法地址。不合规时 ok 为 false。
+func normalizeContact(kind, raw string) (contact string, ok bool) {
+	if kind == contactKindPhone {
+		return phone.NormalizeCNMobile(raw)
+	}
+	s := strings.ToLower(strings.TrimSpace(raw))
+	addr, err := mail.ParseAddress(s)
+	if err != nil || addr.Address != s {
+		return "", false
+	}
+	return s, true
+}
+
 // sendContactVCode 向指定联系方式发送业务验证码（绑定场景）。
 // 邮箱走 mail.yaml 的 SMTP，手机号走同一文件里的短信账号。
 // 验证码归属到申请它的用户；发送有额度；日志里没有验证码，联系方式打码。
@@ -64,7 +79,7 @@ func (s *UserProfileService) sendContactVCode(ctx context.Context, userID uint32
 		return authenticationV1.ErrorNotImplemented("sms channel is not configured")
 	}
 
-	allowed, err := s.vcodeCache.AllowSendForUser(ctx, userID, contact)
+	allowed, err := s.vcodeCache.AllowSendForUser(ctx, userID, kind, contact)
 	if err != nil {
 		return authenticationV1.ErrorServiceUnavailable("verification code service unavailable")
 	}
@@ -77,7 +92,7 @@ func (s *UserProfileService) sendContactVCode(ctx context.Context, userID uint32
 		s.log.Errorf(ctx, "bind-contact: generate code failed: %v", err)
 		return authenticationV1.ErrorInternalServerError("generate verification code failed")
 	}
-	if err = s.vcodeCache.SaveForUser(ctx, userID, bindContactPurpose, contact, code, bindContactCodeTTL); err != nil {
+	if err = s.vcodeCache.SaveForUser(ctx, userID, bindContactPurpose, kind, contact, code, bindContactCodeTTL); err != nil {
 		return authenticationV1.ErrorServiceUnavailable("verification code service unavailable")
 	}
 
@@ -123,7 +138,7 @@ func (s *UserProfileService) BindContact(ctx context.Context, req *identityV1.Bi
 			return nil, authenticationV1.ErrorBadRequest("phone is required")
 		}
 		// 服务入口先做一次格式校验：错误在第一步就回给用户。
-		mobile, ok := phone.NormalizeCNMobile(bindPhone.GetPhone())
+		mobile, ok := normalizeContact(contactKindPhone, bindPhone.GetPhone())
 		if !ok {
 			return nil, authenticationV1.ErrorBadRequest("invalid phone number")
 		}
@@ -134,9 +149,13 @@ func (s *UserProfileService) BindContact(ctx context.Context, req *identityV1.Bi
 	}
 
 	if bindEmail := req.GetEmail(); bindEmail != nil {
-		contact := strings.TrimSpace(bindEmail.GetEmail())
-		if contact == "" {
+		if strings.TrimSpace(bindEmail.GetEmail()) == "" {
 			return nil, authenticationV1.ErrorBadRequest("email is required")
+		}
+		// 格式不对的地址在扣额度、存验证码之前就拒绝。
+		contact, ok := normalizeContact(contactKindEmail, bindEmail.GetEmail())
+		if !ok {
+			return nil, authenticationV1.ErrorBadRequest("invalid email address")
 		}
 		if err = s.sendContactVCode(ctx, operator.GetUserId(), contactKindEmail, contact); err != nil {
 			return nil, err
@@ -165,16 +184,15 @@ func (s *UserProfileService) VerifyContact(ctx context.Context, req *identityV1.
 	if contact == "" || code == "" {
 		return nil, authenticationV1.ErrorBadRequest("contact and code are required")
 	}
-	if kind == contactKindPhone {
-		mobile, ok := phone.NormalizeCNMobile(contact)
-		if !ok {
-			return nil, authenticationV1.ErrorBadRequest("invalid phone number")
-		}
-		contact = mobile
+	// 和发码用同一套规范，否则同一个联系方式的两种写法会对不上验证码。
+	normalized, valid := normalizeContact(kind, contact)
+	if !valid {
+		return nil, authenticationV1.ErrorBadRequest("invalid contact")
 	}
+	contact = normalized
 
 	// 验证码归属到申请它的用户；校验、消费、计错是一次原子操作。Redis 出错时拒绝，不放行。
-	ok, err := s.vcodeCache.VerifyForUser(ctx, operator.GetUserId(), bindContactPurpose, contact, code)
+	ok, err := s.vcodeCache.VerifyForUser(ctx, operator.GetUserId(), bindContactPurpose, kind, contact, code)
 	if err != nil {
 		return nil, authenticationV1.ErrorServiceUnavailable("verification code service unavailable")
 	}

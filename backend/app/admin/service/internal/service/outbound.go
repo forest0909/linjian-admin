@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"go-wind-admin/third_party/go-utils/mailer"
@@ -107,6 +108,32 @@ func LoadOutboundConfig(configDir string) (OutboundConfig, error) {
 	}, nil
 }
 
+// scrubbedError 发送失败的错误：文本里的收件地址和验证码已经清掉，可以直接进日志。
+// SMTP 的拒收错误会带原始收件人，短信服务商的应答可能回显请求内容。
+// Unwrap 保留原错误，errors.Is 照常可用；不要再打印 Unwrap 出来的错误。
+type scrubbedError struct {
+	msg   string
+	cause error
+}
+
+func (e *scrubbedError) Error() string { return e.msg }
+func (e *scrubbedError) Unwrap() error { return e.cause }
+
+// scrubSendError 把错误文本里出现的 secrets（收件地址、验证码）换成占位符，大小写不敏感。
+func scrubSendError(err error, secrets ...string) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	for _, secret := range secrets {
+		if secret == "" {
+			continue
+		}
+		msg = regexp.MustCompile("(?i)"+regexp.QuoteMeta(secret)).ReplaceAllString(msg, "[redacted]")
+	}
+	return &scrubbedError{msg: msg, cause: err}
+}
+
 // OutboundSender 按 mail.yaml 发验证码邮件和短信。配置在进程启动时读一次。
 type OutboundSender struct {
 	cfg OutboundConfig
@@ -125,7 +152,7 @@ func (s *OutboundSender) SendMail(ctx context.Context, to, subject, body string)
 		return fmt.Errorf("%w: smtp.tls %q is not one of NONE/START_TLS/SSL", ErrOutboundNotConfigured, s.cfg.SMTP.TlsMode)
 	}
 	if err := mailer.SendMail(ctx, s.cfg.SMTP, []string{to}, subject, body); err != nil {
-		return fmt.Errorf("send mail failed: %w", err)
+		return scrubSendError(fmt.Errorf("send mail failed: %w", err), to)
 	}
 	return nil
 }
@@ -160,9 +187,9 @@ func (s *OutboundSender) SendSMS(ctx context.Context, phone, code string) error 
 	})
 	if err != nil {
 		if errors.Is(err, notify.ErrNotConfigured) {
-			return fmt.Errorf("%w: %v", ErrOutboundNotConfigured, err)
+			return scrubSendError(fmt.Errorf("%w: %v", ErrOutboundNotConfigured, err), phone, code)
 		}
-		return fmt.Errorf("send sms failed: %w", err)
+		return scrubSendError(fmt.Errorf("send sms failed: %w", err), phone, code)
 	}
 	return nil
 }

@@ -306,84 +306,96 @@ func newVCodeCacheEnv(t *testing.T) (*VCodeCache, *miniredis.Miniredis, *redis.C
 
 func TestVCodeCache_ForUser(t *testing.T) {
 	ctx := context.Background()
-	const purpose, contact, code = "bind_contact", "13800000001", "123456"
+	const purpose, channel, contact, code = "bind_contact", "phone", "13800000001", "123456"
 
 	t.Run("别的用户申请的验证码不能用", func(t *testing.T) {
 		c, _, _ := newVCodeCacheEnv(t)
-		require.NoError(t, c.SaveForUser(ctx, 1, purpose, contact, code, time.Minute))
-		ok, err := c.VerifyForUser(ctx, 2, purpose, contact, code)
+		require.NoError(t, c.SaveForUser(ctx, 1, purpose, channel, contact, code, time.Minute))
+		ok, err := c.VerifyForUser(ctx, 2, purpose, channel, contact, code)
 		require.NoError(t, err)
 		require.False(t, ok)
 		// 别人试错不影响本人的验证码。
-		ok, err = c.VerifyForUser(ctx, 1, purpose, contact, code)
+		ok, err = c.VerifyForUser(ctx, 1, purpose, channel, contact, code)
 		require.NoError(t, err)
 		require.True(t, ok)
 	})
 
 	t.Run("换一个联系方式不能用", func(t *testing.T) {
 		c, _, _ := newVCodeCacheEnv(t)
-		require.NoError(t, c.SaveForUser(ctx, 1, purpose, contact, code, time.Minute))
-		ok, err := c.VerifyForUser(ctx, 1, purpose, "13900000002", code)
+		require.NoError(t, c.SaveForUser(ctx, 1, purpose, channel, contact, code, time.Minute))
+		ok, err := c.VerifyForUser(ctx, 1, purpose, channel, "13900000002", code)
 		require.NoError(t, err)
 		require.False(t, ok)
 	})
 
+	t.Run("换一个渠道不能用", func(t *testing.T) {
+		c, _, _ := newVCodeCacheEnv(t)
+		// 邮件渠道为同一段文本签发的验证码，不能过短信渠道的验证。
+		require.NoError(t, c.SaveForUser(ctx, 1, purpose, "email", contact, code, time.Minute))
+		ok, err := c.VerifyForUser(ctx, 1, purpose, "phone", contact, code)
+		require.NoError(t, err)
+		require.False(t, ok)
+		ok, err = c.VerifyForUser(ctx, 1, purpose, "email", contact, code)
+		require.NoError(t, err)
+		require.True(t, ok)
+	})
+
 	t.Run("用过一次就作废", func(t *testing.T) {
 		c, _, _ := newVCodeCacheEnv(t)
-		require.NoError(t, c.SaveForUser(ctx, 1, purpose, contact, code, time.Minute))
-		ok, _ := c.VerifyForUser(ctx, 1, purpose, contact, code)
+		require.NoError(t, c.SaveForUser(ctx, 1, purpose, channel, contact, code, time.Minute))
+		ok, _ := c.VerifyForUser(ctx, 1, purpose, channel, contact, code)
 		require.True(t, ok)
-		ok, _ = c.VerifyForUser(ctx, 1, purpose, contact, code)
+		ok, _ = c.VerifyForUser(ctx, 1, purpose, channel, contact, code)
 		require.False(t, ok)
 	})
 
 	t.Run("错 5 次后正确的也不行", func(t *testing.T) {
 		c, _, _ := newVCodeCacheEnv(t)
-		require.NoError(t, c.SaveForUser(ctx, 1, purpose, contact, code, time.Minute))
+		require.NoError(t, c.SaveForUser(ctx, 1, purpose, channel, contact, code, time.Minute))
 		for i := 0; i < VCodeMaxAttempts; i++ {
-			ok, err := c.VerifyForUser(ctx, 1, purpose, contact, "000000")
+			ok, err := c.VerifyForUser(ctx, 1, purpose, channel, contact, "000000")
 			require.NoError(t, err)
 			require.False(t, ok)
 		}
-		ok, err := c.VerifyForUser(ctx, 1, purpose, contact, code)
+		ok, err := c.VerifyForUser(ctx, 1, purpose, channel, contact, code)
 		require.NoError(t, err)
 		require.False(t, ok)
 	})
 
 	t.Run("错 4 次后正确的还行，重新申请清零计数", func(t *testing.T) {
 		c, _, _ := newVCodeCacheEnv(t)
-		require.NoError(t, c.SaveForUser(ctx, 1, purpose, contact, code, time.Minute))
+		require.NoError(t, c.SaveForUser(ctx, 1, purpose, channel, contact, code, time.Minute))
 		for i := 0; i < VCodeMaxAttempts-1; i++ {
-			_, _ = c.VerifyForUser(ctx, 1, purpose, contact, "000000")
+			_, _ = c.VerifyForUser(ctx, 1, purpose, channel, contact, "000000")
 		}
-		require.NoError(t, c.SaveForUser(ctx, 1, purpose, contact, "654321", time.Minute))
+		require.NoError(t, c.SaveForUser(ctx, 1, purpose, channel, contact, "654321", time.Minute))
 		for i := 0; i < VCodeMaxAttempts-1; i++ {
-			_, _ = c.VerifyForUser(ctx, 1, purpose, contact, "000000")
+			_, _ = c.VerifyForUser(ctx, 1, purpose, channel, contact, "000000")
 		}
-		ok, err := c.VerifyForUser(ctx, 1, purpose, contact, "654321")
+		ok, err := c.VerifyForUser(ctx, 1, purpose, channel, contact, "654321")
 		require.NoError(t, err)
 		require.True(t, ok)
 	})
 
 	t.Run("过期", func(t *testing.T) {
 		c, mr, _ := newVCodeCacheEnv(t)
-		require.NoError(t, c.SaveForUser(ctx, 1, purpose, contact, code, time.Minute))
+		require.NoError(t, c.SaveForUser(ctx, 1, purpose, channel, contact, code, time.Minute))
 		mr.FastForward(2 * time.Minute)
-		ok, err := c.VerifyForUser(ctx, 1, purpose, contact, code)
+		ok, err := c.VerifyForUser(ctx, 1, purpose, channel, contact, code)
 		require.NoError(t, err)
 		require.False(t, ok)
 	})
 
 	t.Run("并发提交同一个正确验证码只有一个成功", func(t *testing.T) {
 		c, _, _ := newVCodeCacheEnv(t)
-		require.NoError(t, c.SaveForUser(ctx, 1, purpose, contact, code, time.Minute))
+		require.NoError(t, c.SaveForUser(ctx, 1, purpose, channel, contact, code, time.Minute))
 		var wins int32
 		var wg sync.WaitGroup
 		for i := 0; i < 20; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				if ok, err := c.VerifyForUser(ctx, 1, purpose, contact, code); err == nil && ok {
+				if ok, err := c.VerifyForUser(ctx, 1, purpose, channel, contact, code); err == nil && ok {
 					atomic.AddInt32(&wins, 1)
 				}
 			}()
@@ -394,15 +406,15 @@ func TestVCodeCache_ForUser(t *testing.T) {
 
 	t.Run("Redis 出错时报错，不放行", func(t *testing.T) {
 		c, mr, _ := newVCodeCacheEnv(t)
-		require.NoError(t, c.SaveForUser(ctx, 1, purpose, contact, code, time.Minute))
+		require.NoError(t, c.SaveForUser(ctx, 1, purpose, channel, contact, code, time.Minute))
 		mr.Close()
-		ok, err := c.VerifyForUser(ctx, 1, purpose, contact, code)
+		ok, err := c.VerifyForUser(ctx, 1, purpose, channel, contact, code)
 		require.Error(t, err)
 		require.False(t, ok)
-		allowed, err := c.AllowSendForUser(ctx, 1, contact)
+		allowed, err := c.AllowSendForUser(ctx, 1, channel, contact)
 		require.Error(t, err)
 		require.False(t, allowed)
-		require.Error(t, c.SaveForUser(ctx, 1, purpose, contact, code, time.Minute))
+		require.Error(t, c.SaveForUser(ctx, 1, purpose, channel, contact, code, time.Minute))
 	})
 }
 
@@ -410,7 +422,7 @@ func TestVCodeCache_SendQuota(t *testing.T) {
 	ctx := context.Background()
 
 	allow := func(c *VCodeCache, uid uint32, contact string) bool {
-		ok, err := c.AllowSendForUser(ctx, uid, contact)
+		ok, err := c.AllowSendForUser(ctx, uid, "phone", contact)
 		require.NoError(t, err)
 		return ok
 	}
@@ -438,11 +450,24 @@ func TestVCodeCache_SendQuota(t *testing.T) {
 		require.True(t, allow(c, 1, "13800000007"))
 	})
 
+	t.Run("邮件请求不占号码额度，用户合计额度两个渠道共用", func(t *testing.T) {
+		c, _, _ := newVCodeCacheEnv(t)
+		ok, err := c.AllowSendForUser(ctx, 1, "email", "13800000001")
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.True(t, allow(c, 2, "13800000001"), "同一段文本在短信渠道的额度没被邮件请求占掉")
+		// 用户 1 已用 1 次（邮件），再发 4 次短信后合计 5 次，第 6 次被拦。
+		for i := 2; i <= 5; i++ {
+			require.True(t, allow(c, 1, "1380000000"+string(rune('0'+i))))
+		}
+		require.False(t, allow(c, 1, "13800000009"))
+	})
+
 	t.Run("重新保存验证码不会清掉额度", func(t *testing.T) {
 		c, _, _ := newVCodeCacheEnv(t)
 		require.True(t, allow(c, 1, "13800000001"))
-		require.NoError(t, c.SaveForUser(ctx, 1, "bind_contact", "13800000001", "111111", time.Minute))
-		require.NoError(t, c.SaveForUser(ctx, 1, "bind_contact", "13800000001", "222222", time.Minute))
+		require.NoError(t, c.SaveForUser(ctx, 1, "bind_contact", "phone", "13800000001", "111111", time.Minute))
+		require.NoError(t, c.SaveForUser(ctx, 1, "bind_contact", "phone", "13800000001", "222222", time.Minute))
 		require.False(t, allow(c, 1, "13800000001"))
 	})
 }

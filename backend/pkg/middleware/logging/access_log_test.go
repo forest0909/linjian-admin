@@ -366,3 +366,41 @@ func TestFormatArgs_RedactsContactVerificationCode(t *testing.T) {
 	require.NotContains(t, out, mailCode)
 	require.Equal(t, mailCode, emailReq.GetEmail().GetCode())
 }
+
+// 改号、发码、管理员改用户资料的请求里，手机号和邮箱在访问日志里只留打码后的样子；
+// 发码请求自带的验证码字段清空。请求原件不被改动。
+func TestFormatArgs_MasksContacts(t *testing.T) {
+	const mobile, email, code = "13800000001", "alice@example.com", "482913"
+
+	cases := map[string]proto.Message{
+		"BindContact 手机": &identityV1.BindContactRequest{Contact: &identityV1.BindContactRequest_Phone{
+			Phone: &identityV1.BindPhoneRequest{Phone: mobile, Code: code},
+		}},
+		"BindContact 邮箱": &identityV1.BindContactRequest{Contact: &identityV1.BindContactRequest_Email{
+			Email: &identityV1.BindEmailRequest{Email: email, VerificationCode: trans.Ptr(code)},
+		}},
+		"VerifyContact 手机": &identityV1.VerifyContactRequest{Contact: &identityV1.VerifyContactRequest_Phone{
+			Phone: &identityV1.PhoneVerification{Phone: mobile, Code: code},
+		}},
+		"VerifyContact 邮箱": &identityV1.VerifyContactRequest{Contact: &identityV1.VerifyContactRequest_Email{
+			Email: &identityV1.EmailVerification{Email: email, Code: code},
+		}},
+		"管理员更新用户": &identityV1.UpdateUserRequest{Id: 7, Data: &identityV1.User{
+			Mobile: trans.Ptr(mobile), Email: trans.Ptr(email), Nickname: trans.Ptr("nick"),
+		}},
+		"创建用户": &identityV1.CreateUserRequest{Data: &identityV1.User{Mobile: trans.Ptr(mobile), Email: trans.Ptr(email)}},
+	}
+	for name, req := range cases {
+		before := proto.Clone(req)
+		out := FormatArgs(req)
+		require.NotContains(t, out, mobile, name)
+		require.NotContains(t, out, email, name)
+		require.NotContains(t, out, code, name)
+		require.True(t, proto.Equal(before, req), "%s: 请求原件不能被改动", name)
+	}
+
+	out := FormatArgs(cases["管理员更新用户"])
+	require.Contains(t, out, "138****0001")
+	require.Contains(t, out, "a***@example.com")
+	require.Contains(t, out, "nick", "其他字段照常记录")
+}

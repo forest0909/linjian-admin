@@ -78,6 +78,7 @@ type fakeContactSender struct {
 	smsConfigured bool
 	sms           map[string]string // 号码 → 最近一次的验证码
 	smsCount      int
+	mailBody      map[string]string // 收件地址 → 最近一次的正文
 }
 
 func (f *fakeContactSender) SMSConfigured() bool { return f.smsConfigured }
@@ -92,7 +93,13 @@ func (f *fakeContactSender) SendSMS(_ context.Context, phone, code string) error
 	f.smsCount++
 	return nil
 }
-func (f *fakeContactSender) SendMail(context.Context, string, string, string) error { return nil }
+func (f *fakeContactSender) SendMail(_ context.Context, to, _, body string) error {
+	if f.mailBody == nil {
+		f.mailBody = map[string]string{}
+	}
+	f.mailBody[to] = body
+	return nil
+}
 
 type credWriteEnv struct {
 	sys       context.Context
@@ -452,6 +459,62 @@ func TestVerifyContact_Phone(t *testing.T) {
 		// 接受的残留：没删掉的令牌在自己的有效期内仍能用。
 		require.True(t, e.tokenValid(appAT))
 	})
+}
+
+func bindEmailReq(email string) *identityV1.BindContactRequest {
+	return &identityV1.BindContactRequest{Contact: &identityV1.BindContactRequest_Email{Email: &identityV1.BindEmailRequest{Email: email}}}
+}
+
+// 短信和邮件两个渠道的验证码、号码额度互不相通。
+func TestContactVCode_ChannelsAreIsolated(t *testing.T) {
+	const newMobile = "13900000002"
+
+	t.Run("邮件渠道签发的验证码不能过短信验证", func(t *testing.T) {
+		e := newCredWriteEnv(t)
+		id := e.seedUser(t, "self", "13800000001")
+		// 直接以邮件渠道为同一段文本存一枚验证码（模拟 SMTP 接受了本地收件人地址）。
+		require.NoError(t, e.profile.vcodeCache.SaveForUser(context.Background(), id, bindContactPurpose, contactKindEmail, newMobile, "246810", bindContactCodeTTL))
+		_, err := e.profile.VerifyContact(e.selfCtx(id), verifyPhoneReq(newMobile, "246810"))
+		require.True(t, authenticationV1.IsBadRequest(err), "got %v", err)
+		require.Equal(t, "13800000001", e.mobile(t, id))
+	})
+
+	t.Run("格式不对的邮箱在扣额度和存验证码之前被拒", func(t *testing.T) {
+		e := newCredWriteEnv(t)
+		id := e.seedUser(t, "self", "13800000001")
+		for _, bad := range []string{newMobile, "not-an-email", "a@b@c", "Alice <a@example.com>"} {
+			_, err := e.profile.BindContact(e.selfCtx(id), bindEmailReq(bad))
+			require.True(t, authenticationV1.IsBadRequest(err), "%q: %v", bad, err)
+		}
+		// 上面的邮件请求没有占用号码额度，也没有占用户额度：短信照常能发。
+		_, err := e.profile.BindContact(e.selfCtx(id), bindPhoneReq(newMobile))
+		require.NoError(t, err)
+		require.Equal(t, 1, e.sender.smsCount)
+	})
+
+	t.Run("邮箱发码和验证用同一套规范", func(t *testing.T) {
+		e := newCredWriteEnv(t)
+		id := e.seedUser(t, "self", "13800000001")
+		_, err := e.profile.BindContact(e.selfCtx(id), bindEmailReq(" Alice@Example.com "))
+		require.NoError(t, err)
+		require.NotEmpty(t, e.sender.mailBody["alice@example.com"])
+	})
+}
+
+// 发送失败的错误文本里没有收件地址和验证码。
+func TestScrubSendError(t *testing.T) {
+	cause := errors.New("smtp RCPT failed for Alice@Example.com: 550 5.1.1 <alice@example.com>: Recipient address rejected")
+	err := scrubSendError(fmt.Errorf("send mail failed: %w", cause), "alice@example.com")
+	require.NotContains(t, strings.ToLower(err.Error()), "alice@example.com")
+	require.Contains(t, err.Error(), "550 5.1.1")
+	require.ErrorIs(t, err, cause)
+
+	err = scrubSendError(fmt.Errorf("%w: peer answered 400: {\"PhoneNumbers\":\"+8613800000001\",\"code\":\"482913\"}", ErrOutboundNotConfigured), "13800000001", "482913")
+	require.NotContains(t, err.Error(), "13800000001")
+	require.NotContains(t, err.Error(), "482913")
+	require.ErrorIs(t, err, ErrOutboundNotConfigured)
+
+	require.NoError(t, scrubSendError(nil, "x"))
 }
 
 // ---- 管理员写凭证 ----
