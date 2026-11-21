@@ -91,12 +91,13 @@ type Authenticator struct {
 
 	// revokeHooksMu / revokeHooks 用户全部令牌被吊销后的回调（如断开该用户的 SSE 连接）。
 	revokeHooksMu sync.RWMutex
-	revokeHooks   []func(ctx context.Context, userId uint32)
+	revokeHooks   []func(ctx context.Context, clientType authenticationV1.ClientType, userId uint32)
 }
 
 // OnUserTokensRevoked 注册「用户某客户端类型的全部令牌被吊销」后的回调。
 // 登出、改密、重置密码、停用、删除、角色变更都经 RevokeUserToken，回调随之触发。
-func (a *Authenticator) OnUserTokensRevoked(fn func(ctx context.Context, userId uint32)) {
+// 回调带上被吊销的客户端类型：只吊销 app 令牌时不该断开管理端的长连接。
+func (a *Authenticator) OnUserTokensRevoked(fn func(ctx context.Context, clientType authenticationV1.ClientType, userId uint32)) {
 	if fn == nil {
 		return
 	}
@@ -105,12 +106,12 @@ func (a *Authenticator) OnUserTokensRevoked(fn func(ctx context.Context, userId 
 	a.revokeHooks = append(a.revokeHooks, fn)
 }
 
-func (a *Authenticator) fireRevokeHooks(ctx context.Context, userId uint32) {
+func (a *Authenticator) fireRevokeHooks(ctx context.Context, clientType authenticationV1.ClientType, userId uint32) {
 	a.revokeHooksMu.RLock()
-	hooks := append([]func(context.Context, uint32){}, a.revokeHooks...)
+	hooks := append([]func(context.Context, authenticationV1.ClientType, uint32){}, a.revokeHooks...)
 	a.revokeHooksMu.RUnlock()
 	for _, fn := range hooks {
-		fn(ctx, userId)
+		fn(ctx, clientType, userId)
 	}
 }
 
@@ -309,7 +310,10 @@ func (a *Authenticator) GetRefreshTokenExpires(clientType authenticationV1.Clien
 	}
 }
 
-// Authenticate 根据不同的客户端类型验证 Token
+// Authenticate 验证 Token。
+// access token 的客户端类型取自令牌自己的 ct 声明（缺省 admin，值非法则拒绝），
+// 不看 req.ClientType；返回的 payload 里 ClientType 一定有值，专用通道（SSE、导出）据此限制。
+// refresh token 仍按 req.ClientType 校验。
 func (a *Authenticator) Authenticate(ctx context.Context, req *authenticationV1.ValidateTokenRequest) (*authenticationV1.ValidateTokenResponse, error) {
 	if req == nil {
 		return nil, authenticationV1.ErrorBadRequest("validate token request is nil")
@@ -353,7 +357,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *authenticationV1.
 		if err != nil {
 			return &authenticationV1.ValidateTokenResponse{
 				IsValid: false,
-			}, err
+			}, authenticationV1.ErrorUnauthorized("invalid access token payload: [%v]", err)
 		}
 
 		// 单租户：tid 非 0 的令牌是升级前旧租户签发的会话，统一拒绝
@@ -364,10 +368,14 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *authenticationV1.
 			}, authenticationV1.ErrorUnauthorized("token of a removed tenant is no longer accepted")
 		}
 
+		// 升级前签发的管理端令牌没有 ct，按 admin 处理。写回 payload，下游不用再判空。
+		tokenClientType := payload.GetClientType()
+		payload.ClientType = trans.Ptr(tokenClientType)
+
 		// Check token validity in cache
 		if !req.GetSkipRedis() {
 			var valid bool
-			if valid, err = a.userTokenCache.IsValidAccessToken(ctx, req.GetClientType(), payload.GetUserId(), payload.GetJti(), req.GetToken()); err != nil {
+			if valid, err = a.userTokenCache.IsValidAccessToken(ctx, tokenClientType, payload.GetUserId(), payload.GetJti(), req.GetToken()); err != nil {
 				return &authenticationV1.ValidateTokenResponse{
 					IsValid: false,
 				}, authenticationV1.ErrorUnauthorized("invalid access token: [%v]", err)
@@ -459,6 +467,8 @@ func (a *Authenticator) CreateUserTokenGuarded(
 	}
 
 	tokenPayload.Jti = trans.Ptr(jti)
+	// 客户端类型写进令牌的 ct 声明，校验时按它找 Redis 记录。
+	tokenPayload.ClientType = trans.Ptr(clientType)
 
 	// Create Access Token
 	if accessToken, err = a.newAccessToken(clientType, tokenPayload); accessToken == "" || err != nil {
@@ -539,7 +549,7 @@ func (a *Authenticator) RevokeUserToken(ctx context.Context, clientType authenti
 
 	err := a.userTokenCache.RevokeToken(ctx, clientType, userId)
 	// 即便部分删除失败也要断开已建立的长连接：连接只在建立时校验过令牌。
-	a.fireRevokeHooks(ctx, userId)
+	a.fireRevokeHooks(ctx, clientType, userId)
 	if err != nil {
 		a.log.Errorf(ctx, "revoke user token failed: %v", err)
 		return err
@@ -764,18 +774,16 @@ func (a *Authenticator) RevokeUserTokenAllClientTypes(ctx context.Context, userI
 	return errors.Join(errs...)
 }
 
-// getAuthenticator 根据客户端类型获取认证器
+// getAuthenticator 根据客户端类型获取认证器。
+// admin 和 app 共用同一把密钥、同一个引擎，靠令牌里的 ct 声明和 Redis 键区分。
 func (a *Authenticator) getAuthenticator(clientType authenticationV1.ClientType) (authnEngine.Authenticator, error) {
-	var authenticator authnEngine.Authenticator
 	switch clientType {
-	case authenticationV1.ClientType_admin:
-		authenticator = a.AdminAuthenticator
-	case authenticationV1.ClientType_app:
+	case authenticationV1.ClientType_admin, authenticationV1.ClientType_app:
+		return a.AdminAuthenticator, nil
 	default:
-		a.log.Error(context.Background(), "invalid client type: [%v]", clientType)
+		a.log.Errorf(context.Background(), "invalid client type: [%v]", clientType)
 		return nil, authenticationV1.ErrorBadRequest("invalid client type")
 	}
-	return authenticator, nil
 }
 
 // newAccessToken 创建访问令牌

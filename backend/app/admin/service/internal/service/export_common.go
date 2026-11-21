@@ -147,6 +147,11 @@ func authorizeExportRequest(
 		http.Error(w, "unauthorized: invalid token", http.StatusUnauthorized)
 		return nil, nil, false
 	}
+	// 导出是管理端专用通道：只收 admin 令牌，小程序（app）令牌拒绝。
+	if operator.GetClientType() != authenticationV1.ClientType_admin {
+		http.Error(w, "unauthorized: admin token required", http.StatusUnauthorized)
+		return nil, nil, false
+	}
 	ctx := auth.NewContext(r.Context(), operator)
 
 	ctx = viewer.WithSystemContext(ctx)

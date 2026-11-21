@@ -11,6 +11,8 @@ import (
 
 	sseServer "go-wind-admin/third_party/kratos-transport/transport/sse"
 
+	authenticationV1 "go-wind-admin/api/gen/go/authentication/service/v1"
+
 	"go-wind-admin/app/admin/service/internal/data"
 	"go-wind-admin/app/admin/service/internal/service"
 )
@@ -42,15 +44,24 @@ func NewSseServer(
 		internalMessageService.RegisterInternalMessagePublisher(srv)
 	}
 
-	// 用户全部令牌被吊销（登出、改密、停用、删除、全部下线）时断开其已建立的 SSE 连接。
-	// SSE 只在建连时校验令牌，不断开的话旧连接会继续收消息。流 ID 即用户 ID。
-	if authenticator != nil {
-		authenticator.OnUserTokensRevoked(func(_ context.Context, userId uint32) {
-			srv.CloseStream(sseServer.StreamID(strconv.FormatUint(uint64(userId), 10)))
-		})
-	}
+	closeSseStreamsOnAdminRevoke(authenticator, srv)
 
 	//srv.CreateStream("test")
 
 	return srv
+}
+
+// closeSseStreamsOnAdminRevoke 用户的 admin 令牌被全量吊销（登出、改密、停用、删除、全部下线）时
+// 断开其已建立的 SSE 连接。SSE 只在建连时校验令牌，不断开的话旧连接会继续收消息。流 ID 即用户 ID。
+// SSE 只收 admin 令牌，所以只吊销 app 令牌（改号、解绑、小程序下线）时不动管理端的连接。
+func closeSseStreamsOnAdminRevoke(authenticator *data.Authenticator, srv *sseServer.Server) {
+	if authenticator == nil {
+		return
+	}
+	authenticator.OnUserTokensRevoked(func(_ context.Context, clientType authenticationV1.ClientType, userId uint32) {
+		if clientType != authenticationV1.ClientType_admin {
+			return
+		}
+		srv.CloseStream(sseServer.StreamID(strconv.FormatUint(uint64(userId), 10)))
+	})
 }

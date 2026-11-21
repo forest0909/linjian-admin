@@ -221,6 +221,12 @@ func (s *AuthenticationService) resetContextForLogin(ctx context.Context) contex
 
 // Login 登录
 func (s *AuthenticationService) Login(ctx context.Context, req *authenticationV1.LoginRequest) (*authenticationV1.LoginResponse, error) {
+	// 小程序（client_type=app）登录要等微信配置（app_id）接入后才开放。
+	// 现在没有这项配置，等同于 app_id 为空：一切 app 签发都拒绝，放在验证码校验之前。
+	if req.GetClientType() == authenticationV1.ClientType_app {
+		return nil, authenticationV1.ErrorMiniappUnavailable("miniapp login is not enabled")
+	}
+
 	switch req.GetGrantType() {
 	case authenticationV1.GrantType_password:
 		return s.doGrantTypePassword(ctx, req)
@@ -698,7 +704,13 @@ func (s *AuthenticationService) Logout(ctx context.Context, _ *emptypb.Empty) (*
 		return nil, err
 	}
 
-	if err = s.authenticator.RevokeUserToken(ctx, s.clientType, operator.GetUserId()); err != nil {
+	// 管理端的登出只收 admin 令牌。app 令牌走小程序自己的退出接口，
+	// 否则小程序一次退出会把同一用户的管理端会话全部吊销。
+	if operator.GetClientType() != authenticationV1.ClientType_admin {
+		return nil, authenticationV1.ErrorBadRequest("logout only accepts admin token")
+	}
+
+	if err = s.authenticator.RevokeUserToken(ctx, authenticationV1.ClientType_admin, operator.GetUserId()); err != nil {
 		return nil, err
 	}
 

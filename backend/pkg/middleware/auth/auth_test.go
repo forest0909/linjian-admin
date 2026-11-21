@@ -12,6 +12,7 @@ package auth
 import (
 	"context"
 	"encoding/base64"
+	kratosErrors "github.com/go-kratos/kratos/v2/errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -151,6 +152,21 @@ func TestServer_InvalidToken_Rejected(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, ErrAccessTokenExpired, err)
 	require.False(t, reached)
+}
+
+// TestServer_TokenFailureReason 令牌缺失、无效、过期时 reason 是 TOKEN_EXPIRED（401），
+// 和业务层的 UNAUTHORIZED 分得开；小程序只在这个 reason 上触发静默续期。其余错误不变。
+func TestServer_TokenFailureReason(t *testing.T) {
+	for _, e := range []error{ErrMissingBearerToken, ErrAccessTokenExpired} {
+		se := kratosErrors.FromError(e)
+		require.Equal(t, int32(401), se.Code)
+		require.Equal(t, "TOKEN_EXPIRED", se.Reason)
+	}
+	for _, e := range []error{ErrWrongContext, ErrMissingJwtToken, ErrLegacyTenantToken, ErrAccessTokenCheckerNotConfigured, ErrInvalidRequest} {
+		se := kratosErrors.FromError(e)
+		require.Equal(t, int32(401), se.Code)
+		require.Equal(t, "UNAUTHORIZED", se.Reason)
+	}
 }
 
 // ----------------------------------------------------------------------------

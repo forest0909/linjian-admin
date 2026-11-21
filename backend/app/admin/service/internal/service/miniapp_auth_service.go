@@ -10,6 +10,8 @@ import (
 
 	adminV1 "go-wind-admin/api/gen/go/admin/service/v1"
 	authenticationV1 "go-wind-admin/api/gen/go/authentication/service/v1"
+
+	"go-wind-admin/pkg/middleware/auth"
 )
 
 // MiniappAuthService 微信小程序登录：一键登录、静默续期、退出，以及管理端查看和解除绑定。
@@ -40,8 +42,15 @@ func (s *MiniappAuthService) SilentLogin(_ context.Context, _ *authenticationV1.
 	return nil, errMiniappNotImplemented()
 }
 
-// Logout 小程序退出。
-func (s *MiniappAuthService) Logout(_ context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
+// Logout 小程序退出。只收 app 令牌；退出本身还没实现。
+func (s *MiniappAuthService) Logout(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
+	operator, err := auth.FromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if operator.GetClientType() != authenticationV1.ClientType_app {
+		return nil, authenticationV1.ErrorBadRequest("miniapp logout only accepts app token")
+	}
 	return nil, errMiniappNotImplemented()
 }
 

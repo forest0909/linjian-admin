@@ -16,27 +16,24 @@ type TokenChecker struct {
 	log *bLogger.Helper
 
 	authenticator *Authenticator
-	clientType    authenticationV1.ClientType
 }
 
 func NewTokenChecker(
 	ctx *bootstrap.Context,
 	authenticator *Authenticator,
-	clientType authenticationV1.ClientType,
 ) auth.AccessTokenChecker {
 	return &TokenChecker{
 		log:           bLogger.NewHelper(ctx.GetLogger().With("module", "token-checker/auth/middleware")),
 		authenticator: authenticator,
-		clientType:    clientType,
 	}
 }
 
 // IsValidAccessToken checks if the access token is valid for the given user ID.
+// 客户端类型取自令牌自己的 ct 声明（缺省 admin），返回的 payload 里 ClientType 一定有值。
 func (tc *TokenChecker) IsValidAccessToken(ctx context.Context, accessToken string, skipRedis bool) (bool, *authenticationV1.UserTokenPayload) {
 	resp, err := tc.authenticator.Authenticate(ctx, &authenticationV1.ValidateTokenRequest{
 		Token:         accessToken,
 		TokenCategory: authenticationV1.TokenCategory_ACCESS,
-		ClientType:    tc.clientType,
 		SkipRedis:     trans.Ptr(skipRedis),
 	})
 	if err != nil {
@@ -55,7 +52,6 @@ func (tc *TokenChecker) IsBlockedAccessToken(ctx context.Context, accessToken st
 	resp, err := tc.authenticator.Authenticate(ctx, &authenticationV1.ValidateTokenRequest{
 		Token:         accessToken,
 		TokenCategory: authenticationV1.TokenCategory_ACCESS,
-		ClientType:    tc.clientType,
 		SkipRedis:     trans.Ptr(true),
 	})
 	if err != nil {

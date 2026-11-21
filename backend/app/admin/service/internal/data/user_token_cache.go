@@ -330,40 +330,42 @@ func (r *UserTokenCache) GetRefreshTokens(ctx context.Context, clientType authen
 	return r.scanValues(ctx, pattern)
 }
 
-// RevokeToken 移除所有令牌（含会话元数据）
+// RevokeToken 移除所有令牌（含会话元数据）。各步都会执行，错误汇总后返回：
+// 任何一步失败调用方都能看到，不会被后面成功的步骤盖掉。
 func (r *UserTokenCache) RevokeToken(ctx context.Context, clientType authenticationV1.ClientType, userId uint32) error {
-	var err error
+	var errs []error
 	// INCR 吊销版本就是全量吊销的原子生效点：此后已有 RT 的写入版本（rg）、宽限成员的版本
 	// 都对不上，消费脚本一律拒绝；在途刷新写新令牌时比对版本也失败。下面的逐项删除只是清理，
 	// 和刷新怎么交错都不会让会话复活。INCR 失败时仍尽力删除，但最终必须返回错误。
-	incrErr := r.rdb.Incr(ctx, r.makeRevokeVersionKey(clientType, userId)).Err()
-	if incrErr != nil {
-		r.log.Errorf(ctx, "bump revoke version failed for user [%d]: [%v]", userId, incrErr)
+	if err := r.rdb.Incr(ctx, r.makeRevokeVersionKey(clientType, userId)).Err(); err != nil {
+		r.log.Errorf(ctx, "bump revoke version failed for user [%d]: [%v]", userId, err)
+		errs = append(errs, err)
 	}
 
-	if err = r.RevokeUserAllAccessToken(ctx, clientType, userId); err != nil {
+	if err := r.RevokeUserAllAccessToken(ctx, clientType, userId); err != nil {
 		r.log.Errorf(ctx, "remove user access token failed: [%v]", err)
+		errs = append(errs, err)
 	}
 
-	if err = r.RevokeUserAllRefreshToken(ctx, clientType, userId); err != nil {
+	if err := r.RevokeUserAllRefreshToken(ctx, clientType, userId); err != nil {
 		r.log.Errorf(ctx, "remove user refresh token failed: [%v]", err)
+		errs = append(errs, err)
 	}
 
 	// 会话元数据随令牌一并清理，保持「无令牌即无会话记录」的一致性
-	if err = r.DeleteUserSessionMetas(ctx, clientType, userId); err != nil {
+	if err := r.DeleteUserSessionMetas(ctx, clientType, userId); err != nil {
 		r.log.Errorf(ctx, "remove user session metas failed: [%v]", err)
+		errs = append(errs, err)
 	}
 
 	// 宽限集合不在 rt:{ct}:{uid}:* 的扫描范围内。留下的话，全量吊销后
 	// 宽限期内的旧 RT 仍能换出新令牌。
-	if err = r.del(ctx, r.makeRefreshTokenGraceKey(clientType, userId)); err != nil {
+	if err := r.del(ctx, r.makeRefreshTokenGraceKey(clientType, userId)); err != nil {
 		r.log.Errorf(ctx, "remove user refresh token grace failed: [%v]", err)
+		errs = append(errs, err)
 	}
 
-	if incrErr != nil {
-		return incrErr
-	}
-	return err
+	return errors.Join(errs...)
 }
 
 // RevokeAccessToken 移除访问令牌
@@ -616,22 +618,27 @@ func (r *UserTokenCache) AddTokenLineage(
 // 轮换不再删除旧 AT 后，仅删当前 jti 会漏掉同世系更早各代仍在 TTL 内的 AT；
 // 沿 lin: 链回溯逐代删除，恢复「踢即全灭」语义。环/断链由深度上限兜底。
 func (r *UserTokenCache) RevokeTokenByJti(ctx context.Context, clientType authenticationV1.ClientType, userId uint32, jti string) error {
-	var err error
+	// 各步都会执行，错误汇总后返回。
+	var errs []error
 	// 先给本会话打踢下线标记：宽限 RT 和以它为父的在途刷新都会被拒。祖先在下面回溯时逐个标记。
-	if err = r.markKicked(ctx, clientType, userId, jti); err != nil {
+	if err := r.markKicked(ctx, clientType, userId, jti); err != nil {
 		r.log.Errorf(ctx, "mark kicked session failed: [%v]", err)
+		errs = append(errs, err)
 	}
 
-	if err = r.RevokeAccessToken(ctx, clientType, userId, jti); err != nil {
+	if err := r.RevokeAccessToken(ctx, clientType, userId, jti); err != nil {
 		r.log.Errorf(ctx, "remove user access token failed: [%v]", err)
+		errs = append(errs, err)
 	}
 
-	if err = r.RevokeRefreshToken(ctx, clientType, userId, jti); err != nil {
+	if err := r.RevokeRefreshToken(ctx, clientType, userId, jti); err != nil {
 		r.log.Errorf(ctx, "remove user refresh token failed: [%v]", err)
+		errs = append(errs, err)
 	}
 
-	if err = r.DeleteSessionMeta(ctx, clientType, userId, jti); err != nil {
+	if err := r.DeleteSessionMeta(ctx, clientType, userId, jti); err != nil {
 		r.log.Errorf(ctx, "remove user session meta failed: [%v]", err)
+		errs = append(errs, err)
 	}
 
 	// 回溯代际链，删除祖先各代残留的 AT 与链节点
@@ -639,20 +646,30 @@ func (r *UserTokenCache) RevokeTokenByJti(ctx context.Context, clientType authen
 	for i := 0; i < tokenLineageMaxDepth; i++ {
 		lineageKey := r.makeTokenLineageKey(clientType, userId, prev)
 		parent, err := r.rdb.GetDel(ctx, lineageKey).Result()
-		if err != nil || parent == "" {
+		if err != nil {
+			// 链节点不存在是正常的终点；其他错误说明回溯没做完，祖先各代的 AT 可能还在。
+			if !errors.Is(err, redis.Nil) {
+				r.log.Errorf(ctx, "read token lineage failed: [%v]", err)
+				errs = append(errs, err)
+			}
+			break
+		}
+		if parent == "" {
 			break
 		}
 		// 祖先代的 RT 可能还在宽限集合里，打上标记后不能再兑换
 		if err = r.markKicked(ctx, clientType, userId, parent); err != nil {
 			r.log.Errorf(ctx, "mark kicked lineage session failed: [%v]", err)
+			errs = append(errs, err)
 		}
 		if err = r.RevokeAccessToken(ctx, clientType, userId, parent); err != nil {
 			r.log.Errorf(ctx, "remove lineage access token failed: [%v]", err)
+			errs = append(errs, err)
 		}
 		prev = parent
 	}
 
-	return err
+	return errors.Join(errs...)
 }
 
 // ==============================

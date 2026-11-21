@@ -85,7 +85,7 @@ func initApp(ctx *bootstrap.Context) (*kratos.App, func(), error) {
 	captcha := data.NewCaptcha(redisClient)
 	userTokenCache := data.NewUserTokenCache(ctx, redisClient)
 	authenticator := data.NewAuthenticator(ctx, userTokenCache)
-	accessTokenChecker := data.NewTokenChecker(ctx, authenticator, clientType)
+	accessTokenChecker := data.NewTokenChecker(ctx, authenticator)
 	loginRateLimiter := data.NewLoginRateLimiter(ctx, redisClient)
 	vcodeCache := data.NewVCodeCache(ctx, redisClient)
 
