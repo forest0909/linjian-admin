@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ApiError, errorText, isRenewRejected, isTokenExpired } from './errors'
+import { ApiError, errorText, isRenewRejected, isTokenExpired, trustedReason } from './errors'
 
 function apiError(status: number, reason: string) {
   return new ApiError({ status, reason, method: 'GET', path: '/x' })
@@ -39,5 +39,22 @@ describe('errors', () => {
     expect(isRenewRejected(apiError(503, 'MINIAPP_UNAVAILABLE'))).toBe(false)
     expect(isRenewRejected(apiError(429, 'TOO_MANY_REQUESTS'))).toBe(false)
     expect(isRenewRejected(apiError(409, 'CONFLICT'))).toBe(false)
+  })
+
+  it('reason 只接受枚举名形式，其他内容换成 UNKNOWN', () => {
+    expect(trustedReason('MINIAPP_NOT_BOUND')).toBe('MINIAPP_NOT_BOUND')
+    expect(trustedReason('phone 13800001111 rejected')).toBe('UNKNOWN')
+    expect(trustedReason('lower_case')).toBe('UNKNOWN')
+    expect(trustedReason('')).toBe('UNKNOWN')
+    expect(trustedReason(undefined)).toBe('UNKNOWN')
+    expect(trustedReason({ a: 1 })).toBe('UNKNOWN')
+    expect(trustedReason('A'.repeat(65))).toBe('UNKNOWN')
+  })
+
+  it('ApiError 的 message 由状态码、reason、方法、路径按固定格式拼出，路径不带参数', () => {
+    const err = new ApiError({ status: 403, reason: 'FORBIDDEN', method: 'GET', path: '/admin/v1/me?mobile=13800001111' })
+    expect(err.message).toBe('GET /admin/v1/me 403 FORBIDDEN')
+    expect(err.path).toBe('/admin/v1/me')
+    expect(Object.keys(err).sort()).toEqual(['method', 'name', 'path', 'reason', 'status'])
   })
 })

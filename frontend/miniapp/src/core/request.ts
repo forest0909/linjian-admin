@@ -14,9 +14,11 @@ import { getLoginCode, WECHAT_AVAILABLE } from './wechat'
  * 请求封装。规则（设计方案 9.3、9.4 和修订 3 第 3 条）：
  *
  * - 自动带 Authorization；`auth: false` 的登录类接口不带，失败也不触发续期。
- * - 非 2xx：Toast 中文文案，console.error 打出 ApiError（不含请求体和令牌），再抛给调用方。
+ * - 非 2xx：Toast 中文文案，console.error 打出 ApiError，再抛给调用方。
+ *   ApiError 只有状态码、reason、方法、路径；响应里的 message 和平台的 errMsg 是自由文本，不记录。
  * - 只有 401 且 reason 是 TOKEN_EXPIRED 才考虑续期和重放。每个请求最多重放一次。
- * - 响应回来时，发出它的那次登录已经结束（退出、重新登录、切换账号）：丢弃，不续期、不重放、不跳转。
+ * - 每次发送（首次和重放）都记下当时的 loginId。失败的响应回来时 loginId 已经变了
+ *   （退出、重新登录、切换账号）：静默丢弃，不提示、不续期、不重放、不跳转。
  */
 
 const SILENT_LOGIN_PATH = '/admin/v1/miniapp/login/silent'
@@ -61,22 +63,18 @@ async function send<T>(opts: RequestOptions, token: string | null): Promise<T> {
       header,
       timeout: TIMEOUT_MS,
     })
-  } catch (err) {
-    // 网络失败、超时。原始错误对象可能带请求参数，只取它的描述。
-    const detail = (err as { errMsg?: string; message?: string } | null) ?? {}
-    throw new ApiError({ ...meta, status: 0, reason: REASON_NETWORK, message: detail.errMsg || detail.message })
+  } catch {
+    // 网络失败、超时。平台给的错误对象和 errMsg 是自由文本，可能带出请求地址和参数，
+    // 所以不记录、不往上传，只留下「这个接口网络失败」这一事实。
+    throw new ApiError({ ...meta, status: 0, reason: REASON_NETWORK })
   }
 
   if (res.statusCode >= 200 && res.statusCode < 300) {
     return res.data as T
   }
-  const body = (res.data ?? {}) as { reason?: unknown; message?: unknown }
-  throw new ApiError({
-    ...meta,
-    status: res.statusCode,
-    reason: typeof body.reason === 'string' ? body.reason : '',
-    message: typeof body.message === 'string' ? body.message : undefined,
-  })
+  // 只取 reason，并且只接受枚举名形式的值。message 不取。
+  const body = (res.data ?? {}) as { reason?: unknown }
+  throw new ApiError({ ...meta, status: res.statusCode, reason: body.reason })
 }
 
 /** 记日志、按需提示，然后把错误原样返回给调用处抛出。 */
@@ -106,6 +104,11 @@ async function exchangeToken(): Promise<string> {
   return res.access_token
 }
 
+/** 发出请求之后有没有退出过或重新登录过。续期换令牌不算。 */
+function loginChanged(sent: SessionSnapshot): boolean {
+  return snapshot().loginId !== sent.loginId
+}
+
 /** 用当前令牌重放一次。重放的结果不再进入续期流程。 */
 async function replay<T>(opts: RequestOptions, sent: SessionSnapshot, cause: unknown): Promise<T> {
   const cur = snapshot()
@@ -115,6 +118,10 @@ async function replay<T>(opts: RequestOptions, sent: SessionSnapshot, cause: unk
   try {
     return await send<T>(opts, cur.token)
   } catch (err) {
+    // 重放的响应也可能晚到
+    if (loginChanged(sent)) {
+      throw discarded(opts, err)
+    }
     throw report(err, opts)
   }
 }
@@ -135,12 +142,12 @@ async function afterTokenExpired<T>(opts: RequestOptions, sent: SessionSnapshot,
     throw report(cause, opts, false)
   }
 
-  const outcome = await renewSession(exchangeToken)
+  const outcome = await renewSession(exchangeToken, sent)
   switch (outcome) {
     case 'renewed':
       return replay<T>(opts, sent, cause)
     case 'rejected':
-      // 会话已清、已回登录页、已提示。
+      // 被拒绝，或换回来的是别的账号的令牌。会话已清、已回登录页、已提示，不重放。
       throw report(cause, opts, false)
     case 'stale': {
       // 续期途中会话变了，按当前状态重新判断一次。
@@ -176,6 +183,10 @@ export async function request<T = unknown>(opts: RequestOptions): Promise<T> {
   try {
     return await send<T>(opts, sent.token)
   } catch (err) {
+    // 先看是不是晚到的：发出之后会话已经换了，这个失败和当前用户无关，什么都不做。
+    if (loginChanged(sent)) {
+      throw discarded(opts, err)
+    }
     if (!isTokenExpired(err)) {
       throw report(err, opts)
     }

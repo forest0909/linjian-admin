@@ -76,23 +76,26 @@ export async function loginByPhone(code: string, phoneCode: string): Promise<voi
 }
 
 /**
- * 退出：先记下令牌并清本地状态，再用记下的令牌通知后端。
- * 接口失败也照样回登录页，只提示一句。
+ * 退出：先记下令牌、清本地状态并回登录页，再用记下的令牌通知后端。
+ * 接口失败只提示一句。
+ *
+ * 跳转在发请求之前做，接口回来之后不再跳转：退出接口还没返回时用户可能已经重新登录，
+ * 晚到的回包不能把新会话带回登录页。失败提示也只在没有重新登录时才弹。
  */
 export async function logout(): Promise<void> {
   const { token } = snapshot()
   clearSession()
-  let failed = false
-  if (token) {
-    try {
-      await request({ method: 'POST', url: '/admin/v1/miniapp/logout', data: {}, token, silent: true })
-    } catch (err) {
-      console.error('[auth] 退出接口失败', err)
-      failed = true
-    }
-  }
+  const after = snapshot()
   toLoginPage()
-  if (failed) {
-    Taro.showToast({ title: '退出未完全成功', icon: 'none' })
+  if (!token) {
+    return
+  }
+  try {
+    await request({ method: 'POST', url: '/admin/v1/miniapp/logout', data: {}, token, silent: true })
+  } catch (err) {
+    console.error('[auth] 退出接口失败', err)
+    if (snapshot().loginId === after.loginId) {
+      Taro.showToast({ title: '退出未完全成功', icon: 'none' })
+    }
   }
 }

@@ -25,9 +25,5 @@ jobs:
       - run: test -f dist/weapp/app.json
       - run: npm run build:h5
       - run: test -f dist/h5/index.html
-      # 生产构建打开微信 mock 必须失败
-      - run: |
-          if TARO_APP_WECHAT_MOCK=true NODE_ENV=production npm run build:h5; then
-            echo "生产构建开着 TARO_APP_WECHAT_MOCK 却成功了" >&2
-            exit 1
-          fi
+      # 两端开着微信 mock 的构建必须被 config/index.ts 拦下（校验报错文案），产物里不能有 mock 标记
+      - run: bash scripts/check-mock-guard.sh

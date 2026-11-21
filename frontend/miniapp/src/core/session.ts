@@ -1,5 +1,6 @@
 import Taro from '@tarojs/taro'
 import { create } from 'zustand'
+import { tokenUid } from './crypto'
 import { isRenewRejected, TEXT_SESSION_EXPIRED } from './errors'
 
 /**
@@ -131,49 +132,83 @@ export function expireSession(snap: SessionSnapshot): boolean {
 /**
  * 续期结果。
  * - renewed：新令牌已保存，可以重放。
- * - rejected：被明确拒绝，已清状态并回登录页。
+ * - rejected：被明确拒绝，或换回来的令牌不属于当前账号，已清状态并回登录页。
  * - failed：临时故障，状态没动，下一次请求会再试。
  * - stale：续期途中会话变了（退出或重新登录），结果已丢弃。
  */
 export type RenewOutcome = 'renewed' | 'rejected' | 'failed' | 'stale'
 
-let renewing: Promise<RenewOutcome> | null = null
+/** 进行中的续期，和发起它的那次登录绑定。 */
+interface RenewTask {
+  loginId: number
+  promise: Promise<RenewOutcome>
+}
+
+let renewing: RenewTask | null = null
+
+async function runRenew(exchange: () => Promise<string>, start: SessionSnapshot): Promise<RenewOutcome> {
+  try {
+    const token = await exchange()
+    if (!isCurrent(start)) {
+      return 'stale'
+    }
+    // 续期接口只认微信 code：这个微信如果已经改绑到别的账号，换回来的会是那个账号的令牌。
+    // 接受它等于在用户不知情时换了账号，挂起的写请求还会用新账号重放。
+    // 所以新旧令牌的 uid 必须相同，取不出来也按不同处理。
+    const before = start.token ? tokenUid(start.token) : null
+    const after = tokenUid(token)
+    if (before === null || after === null || before !== after) {
+      console.warn('[session] 续期返回的令牌不属于当前账号，回登录页')
+      expireSession(start)
+      return 'rejected'
+    }
+    // 续期不算新登录：loginId 不变，只换令牌。续期成功说明绑定还在，bound 保持 true。
+    useSession.setState({ token })
+    writeStorage(token, true)
+    return 'renewed'
+  } catch (err) {
+    if (!isCurrent(start)) {
+      console.warn('[session] 续期失败，但会话已变，忽略', err)
+      return 'stale'
+    }
+    if (isRenewRejected(err)) {
+      console.warn('[session] 续期被拒绝，回登录页', err)
+      expireSession(start)
+      return 'rejected'
+    }
+    console.error('[session] 续期遇到临时故障', err)
+    return 'failed'
+  }
+}
 
 /**
- * 静默续期，单飞：同一时间只有一次，期间再调用拿到的是同一个 Promise。
+ * 静默续期，单飞。
+ *
+ * - expected 是调用方发请求时记下的快照。它已经不是当前会话时直接返回 stale，不发请求。
+ * - 同一次登录里，续期进行中再调用拿到的是同一个 Promise。
+ * - 另一次登录的续期还没结束时（续期途中换了账号）：等它结束，再按自己的快照重新判断，
+ *   需要的话发起自己的续期。全局同一时间仍然只有一次续期。
+ *
  * exchange 负责向后端换新令牌（取 wx.login code 并调续期接口），由请求封装传入。
  */
-export function renewSession(exchange: () => Promise<string>): Promise<RenewOutcome> {
+export function renewSession(exchange: () => Promise<string>, expected: SessionSnapshot): Promise<RenewOutcome> {
+  if (renewing && renewing.loginId !== expected.loginId) {
+    const retry = () => renewSession(exchange, expected)
+    return renewing.promise.then(retry, retry)
+  }
+  if (!isCurrent(expected)) {
+    return Promise.resolve<RenewOutcome>('stale')
+  }
   if (renewing) {
-    return renewing
+    return renewing.promise
   }
-  const start = snapshot()
-  const run = async (): Promise<RenewOutcome> => {
-    try {
-      const token = await exchange()
-      if (!isCurrent(start)) {
-        return 'stale'
-      }
-      // 续期不算新登录：loginId 不变，只换令牌。续期成功说明绑定还在，bound 保持 true。
-      useSession.setState({ token })
-      writeStorage(token, true)
-      return 'renewed'
-    } catch (err) {
-      if (!isCurrent(start)) {
-        console.warn('[session] 续期失败，但会话已变，忽略', err)
-        return 'stale'
-      }
-      if (isRenewRejected(err)) {
-        console.warn('[session] 续期被拒绝，回登录页', err)
-        expireSession(start)
-        return 'rejected'
-      }
-      console.error('[session] 续期遇到临时故障', err)
-      return 'failed'
+  const task: RenewTask = { loginId: expected.loginId, promise: Promise.resolve<RenewOutcome>('stale') }
+  task.promise = runRenew(exchange, expected).finally(() => {
+    // 只清自己这一次，不动别的登录后来发起的续期
+    if (renewing === task) {
+      renewing = null
     }
-  }
-  renewing = run().finally(() => {
-    renewing = null
   })
-  return renewing
+  renewing = task
+  return task.promise
 }

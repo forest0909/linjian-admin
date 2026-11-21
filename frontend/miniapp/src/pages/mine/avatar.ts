@@ -1,13 +1,8 @@
 import Taro from '@tarojs/taro'
+import type { PickResult } from '@/api/profile'
 
 /** 和后端的头像上限一致（5 MiB）。 */
 export const MAX_AVATAR_BYTES = 5 * 1024 * 1024
-
-export interface PickedImage {
-  /** 不带 `data:` 前缀的纯 base64。 */
-  base64: string
-  size: number
-}
 
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -32,26 +27,35 @@ function readFileBase64(path: string): Promise<string> {
   })
 }
 
-/** 让用户选一张图，读成 base64。用户取消时返回 null。 */
-export async function pickImage(): Promise<PickedImage | null> {
+/**
+ * 让用户选一张图，读成 base64。
+ * 大小在读文件之前就校验：超限的图不读、不转码，低内存设备上不会因为一张大图卡住。
+ */
+export async function pickImage(maxBytes = MAX_AVATAR_BYTES): Promise<PickResult> {
   let chosen: Taro.chooseImage.SuccessCallbackResult
   try {
     chosen = await Taro.chooseImage({ count: 1, sizeType: ['compressed'], sourceType: ['album', 'camera'] })
   } catch (err) {
     const msg = (err as { errMsg?: string } | null)?.errMsg ?? ''
     if (msg.includes('cancel')) {
-      return null
+      return { kind: 'cancelled' }
     }
     throw err
   }
   const file = chosen.tempFiles[0]
   if (!file) {
-    return null
+    return { kind: 'cancelled' }
   }
   if (process.env.TARO_ENV === 'h5') {
     // H5 下 tempFilePath 是 blob URL，没有文件系统接口
     const blob = file.originalFileObj ?? (await (await fetch(file.path)).blob())
-    return { base64: await blobToBase64(blob), size: blob.size }
+    if (blob.size > maxBytes) {
+      return { kind: 'too-large' }
+    }
+    return { kind: 'picked', base64: await blobToBase64(blob) }
   }
-  return { base64: await readFileBase64(file.path), size: file.size }
+  if (file.size > maxBytes) {
+    return { kind: 'too-large' }
+  }
+  return { kind: 'picked', base64: await readFileBase64(file.path) }
 }

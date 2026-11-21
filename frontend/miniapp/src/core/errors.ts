@@ -1,8 +1,9 @@
 /**
  * 接口错误和 reason → 中文文案。
  *
- * ApiError 只带状态码、reason、后端 message、请求方法和路径，不带请求体、请求头和令牌，
- * 所以可以直接进日志。
+ * ApiError 只带状态码、reason、请求方法和去掉参数的路径，可以直接进日志。
+ * 后端响应里的 message 和平台错误的 errMsg 是自由文本，可能带出手机号、令牌之类的内容，
+ * 一律不进这个对象；Error.message 用这四个字段按固定格式拼出来。
  */
 
 /** 网络层失败（没有拿到 HTTP 响应）时用的 reason。 */
@@ -15,19 +16,29 @@ export const REASON_RENEW_FAILED = 'RENEW_FAILED'
 export const TEXT_RETRY_LATER = '网络不稳定，请稍后重试'
 export const TEXT_SESSION_EXPIRED = '登录已过期，请重新登录'
 
+/** reason 不是大写字母、数字、下划线组成的枚举名时用的占位。 */
+export const REASON_UNKNOWN = 'UNKNOWN'
+
+/** 只接受形如枚举名的 reason，其他任何内容（包括自由文本）都换成占位。 */
+export function trustedReason(raw: unknown): string {
+  return typeof raw === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(raw) ? raw : REASON_UNKNOWN
+}
+
 export class ApiError extends Error {
   readonly status: number
   readonly reason: string
   readonly method: string
   readonly path: string
 
-  constructor(init: { status: number; reason: string; message?: string; method: string; path: string }) {
-    super(init.message || init.reason)
+  constructor(init: { status: number; reason: unknown; method: string; path: string }) {
+    const reason = trustedReason(init.reason)
+    const path = init.path.split('?')[0]
+    super(`${init.method} ${path} ${init.status} ${reason}`)
     this.name = 'ApiError'
     this.status = init.status
-    this.reason = init.reason
+    this.reason = reason
     this.method = init.method
-    this.path = init.path
+    this.path = path
   }
 }
 

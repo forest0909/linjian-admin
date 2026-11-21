@@ -3,11 +3,11 @@ import { Text, View } from '@tarojs/components'
 import { Avatar, Button, Cell, Input, Popup } from '@nutui/nutui-react-taro'
 import Taro from '@tarojs/taro'
 import { logout } from '@/api/auth'
-import { avatarSrc, changePassword, loadUser, uploadAvatar } from '@/api/profile'
+import { avatarSrc, changePassword, updateAvatar } from '@/api/profile'
 import { ApiError } from '@/core/errors'
 import { useRequireLogin } from '@/core/guard'
-import { clearSession, toLoginPage, useSession } from '@/core/session'
-import { MAX_AVATAR_BYTES, pickImage } from './avatar'
+import { useSession } from '@/core/session'
+import { pickImage } from './avatar'
 import './index.scss'
 
 function toast(title: string) {
@@ -42,17 +42,13 @@ export default function Mine() {
     }
     setUploading(true)
     try {
-      const image = await pickImage()
-      if (!image) {
-        return
-      }
-      if (image.size > MAX_AVATAR_BYTES) {
+      const result = await updateAvatar(pickImage)
+      if (result === 'too-large') {
         toast('图片不能超过 5MB')
-        return
+      } else if (result === 'updated') {
+        toast('头像已更新')
       }
-      await uploadAvatar(image.base64)
-      await loadUser()
-      toast('头像已更新')
+      // cancelled：用户取消。discarded：途中已经退出或换了账号，什么都不做。
     } catch (err) {
       console.error('[mine] 更换头像失败', err)
       if (!(err instanceof ApiError)) {
@@ -81,16 +77,15 @@ export default function Mine() {
     }
     setSaving(true)
     try {
-      await changePassword(oldPassword, newPassword)
+      // 成功时 changePassword 已经清状态并回登录页
+      if ((await changePassword(oldPassword, newPassword)) === 'changed') {
+        toast('密码已修改，请重新登录')
+      }
     } catch (err) {
       console.error('[mine] 修改密码失败', err)
+    } finally {
       setSaving(false)
-      return
     }
-    // 改密后服务端会让这个账号的小程序会话和微信绑定全部失效，直接回登录页重新登录。
-    clearSession()
-    toLoginPage()
-    toast('密码已修改，请重新登录')
   }
 
   async function onLogout() {

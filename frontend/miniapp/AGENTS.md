@@ -16,8 +16,9 @@ Taro 4.3.3 + React 18 + TypeScript，组件库 NutUI-React（Taro 版）4.0.0，
 | H5 开发 | `npm run dev:h5`，端口 15889，`/admin` 转发到 `http://localhost:7788` |
 | H5 构建 | `npm run build:h5`，产物在 `dist/h5` |
 | 类型检查 / lint / 单测 | `npm run typecheck`、`npm run lint`、`npm test` |
+| mock 进不了发布产物的检查 | `bash scripts/check-mock-guard.sh` |
 
-**门禁**：声称完成之前跑完 `typecheck`、`lint`、`test`、`build:mp-weixin`、`build:h5`。CI 是 `.github/workflows/miniapp.yml`，同一组命令。
+**门禁**：声称完成之前跑完 `typecheck`、`lint`、`test`、`build:mp-weixin`、`build:h5`、`check-mock-guard.sh`。CI 是 `.github/workflows/miniapp.yml`，同一组命令。
 
 微信开发者工具导入 `frontend/miniapp` 这个目录（`project.config.json` 的 `miniprogramRoot` 指向 `dist/weapp/`）。编译不依赖开发者工具。
 
@@ -30,6 +31,7 @@ config/                 Taro 构建配置（index.ts 公共，dev.ts / prod.ts �
 .env.development        开发构建的环境变量
 .env.production         生产构建的环境变量
 scripts/gen-tabbar-icons.mjs   从 SVG 生成 tabBar 的 PNG 图标
+scripts/check-mock-guard.sh    检查开着 mock 的构建会失败、产物里没有 mock 标记
 src/
   app.ts / app.config.ts / app.scss
   assets/tabbar/        tabBar 图标：SVG 源文件和生成的 PNG
@@ -42,8 +44,9 @@ src/
   core/session.ts       会话（令牌、bound、用户信息、本地存储）和静默续期的单飞
   core/guard.ts         useRequireLogin：需要登录的页面用
   core/wechat.ts        wx.login、手机号授权、mock
-  core/crypto.ts        encryptPassword
+  core/crypto.ts        encryptPassword、tokenUid
   core/errors.ts        ApiError、reason → 中文文案
+  test-utils.ts         单测辅助（fakeJwt），不进构建产物
 ```
 
 接口和类型是手写的，只写页面实际用到的。接口合同看后端 proto（`backend/api/protos/admin/service/v1/`）或管理端生成的 `frontend/admin/react/src/api/generated/`。
@@ -102,17 +105,31 @@ await request({ method: 'POST', url: '/admin/v1/miniapp/login/phone', data: { co
 
 失败时 `request` 已经做了三件事：按 `reason` 弹中文 Toast、`console.error` 打出 `ApiError`、把 `ApiError` 抛出来。调用方一般只需要 `catch` 住做自己的收尾。不想要默认 Toast 就传 `silent: true`。新的 reason 需要文案时加到 `core/errors.ts` 的 `REASON_TEXT`。
 
-`ApiError` 只有状态码、reason、message、请求方法和路径，可以直接进日志。**不要把请求体、请求头、令牌、微信 code、口令打进日志。**
+`ApiError` 只有状态码、reason、请求方法和去掉参数的路径，可以直接进日志。后端响应里的 `message` 和平台错误的 `errMsg` 是自由文本，可能带出手机号之类的内容，`request` 不记录也不往上传；`reason` 只接受枚举名形式的值，其他一律变成 `UNKNOWN`。**不要把请求体、请求头、令牌、微信 code、口令、接口返回的自由文本打进日志。**
 
 ### 令牌失效时发生什么
 
 只有 `401` 且 reason 是 `TOKEN_EXPIRED` 才进入这套流程，其他错误都不重放。
 
 - 这个微信已绑定账号（登录响应的 `miniapp_bound` 为 `true`）：取一个新的 `wx.login` code 调静默续期，成功后用新令牌把请求重放一次。并发的请求共用一次续期。
+- 续期换回来的令牌必须和原来是同一个用户（比较 JWT 载荷里的 `uid`，取不出来也算不同）。不同说明这个微信已经改绑到别的账号：清状态，回登录页，挂起的请求不重放。
 - 没有绑定，或者在 H5：清状态，回登录页。
 - 续期被明确拒绝（`MINIAPP_NOT_BOUND`、`MINIAPP_CODE_INVALID`、`FORBIDDEN`）：清状态，回登录页。
 - 续期遇到 429、503、409 或网络失败：不清状态，请求失败并提示稍后重试。
-- 响应回来时用户已经退出、重新登录或换了账号：丢弃，抛 reason 为 `SESSION_DISCARDED` 的 `ApiError`，不提示、不跳转、不重放。判断依据是 `core/session.ts` 的 `loginId`：每次登录和每次清状态都换一个，续期不换。
+- 失败的响应回来时用户已经退出、重新登录或换了账号：丢弃，抛 reason 为 `SESSION_DISCARDED` 的 `ApiError`，不提示、不跳转、不续期、不重放。任何失败都这样处理（不只是 401），首次请求和重放都核对。判断依据是 `core/session.ts` 的 `loginId`：每次登录和每次清状态都换一个，续期不换。
+- 续期和发起它的那次登录绑定。续期途中换了账号，新账号不会共用旧账号的续期结果，而是等它结束后发起自己的。
+
+### 异步回调先核对 loginId
+
+凡是「等一个异步步骤回来再动会话、跳转、提示或发下一个请求」的代码，都按同一个写法：
+
+```ts
+const snap = snapshot()              // 动作开始时记下
+const image = await pick()           // 等用户选图、等接口返回……
+if (!isSameLogin(snap)) return 'discarded'   // 已经退出或换了账号：静默结束
+```
+
+`isSameLogin` 只比 `loginId`，途中静默续期换了令牌仍算同一次登录。现有的例子：`api/profile.ts` 的 `loadUser`、`changePassword`、`updateAvatar`，`api/auth.ts` 的 `logout`。不这样写的后果是把上一个账号的结果作用到下一个账号上，比如把图传到新账号、把新会话踢回登录页。
 
 改这部分逻辑要同时改 `core/request.test.ts` 和 `core/session.test.ts`。
 
@@ -120,7 +137,7 @@ await request({ method: 'POST', url: '/admin/v1/miniapp/login/phone', data: { co
 
 - 登录成功调 `startSession(token, bound)`，然后取一次 `/me`。`api/auth.ts` 已经封装好。
 - 页面里读用户信息：`const user = useSession((s) => s.user)`。
-- 退出调 `api/auth.ts` 的 `logout()`：先清本地状态，再用清之前的令牌通知后端，接口失败也照样回登录页。
+- 退出调 `api/auth.ts` 的 `logout()`：先清本地状态并回登录页，再用清之前的令牌通知后端。接口回来后不再跳转；失败时提示一句，但如果这时已经重新登录就不提示。
 - 启动时本地有令牌就留在首页并取 `/me`，没有就去登录页。不会主动静默登录。
 
 ## 不吞错
@@ -141,7 +158,8 @@ TARO_APP_WECHAT_MOCK=true npm run dev:h5
 
 mock 只在开发构建（`npm run dev:*`）里存在：
 
-- 生产构建（`npm run build:*`）遇到 `TARO_APP_WECHAT_MOCK=true` 直接失败。
+- `npm run build:*` 遇到 `TARO_APP_WECHAT_MOCK=true` 直接失败，不管 `NODE_ENV` 是什么。判断依据是「是不是带 `--watch` 的监听构建」：Taro 的非监听构建打出来的总是生产包。
+- `scripts/check-mock-guard.sh` 检查两端的构建都被这条规则拦下（校验报错文案），并扫描两端产物里有没有 mock 标记。CI 会跑。
 - mock 分支都写在 `process.env.NODE_ENV !== 'production'` 这个条件里，生产包里整段被删掉。新增 mock 代码时照这个写法，条件要直接写在使用处，从别的模块 import 一个常量来判断是删不掉的。
 
 ## 容易踩的地方

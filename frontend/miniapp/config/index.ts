@@ -4,11 +4,17 @@ import TsconfigPathsPlugin from 'tsconfig-paths-webpack-plugin'
 import devConfig from './dev'
 import prodConfig from './prod'
 
+// scripts/check-mock-guard.sh 会校验这句报错，改文案时两边一起改。
+const MOCK_IN_BUILD_ERROR = 'TARO_APP_WECHAT_MOCK=true 不能用于生产构建，只能用于 npm run dev:* 的监听构建'
+
 // https://taro-docs.jd.com/docs/next/config
 export default defineConfig<'webpack5'>(async (merge) => {
-  // mock 只给开发构建用。生产构建里出现这个开关就直接失败，避免把 mock 带上线。
-  if (process.env.NODE_ENV === 'production' && process.env.TARO_APP_WECHAT_MOCK === 'true') {
-    throw new Error('TARO_APP_WECHAT_MOCK=true 不能用于生产构建（NODE_ENV=production）')
+  // mock 只给 `npm run dev:*`（带 --watch 的监听构建）用，其他构建里出现这个开关就直接失败。
+  // 不能只看 NODE_ENV：Taro 的非监听构建不管 NODE_ENV 是什么，打出来的都是生产包，
+  // 把 NODE_ENV 设成 development 就能绕过去。所以按「是不是监听构建」判断。
+  const watching = process.argv.includes('--watch') || process.argv.includes('-w')
+  if (process.env.TARO_APP_WECHAT_MOCK === 'true' && (!watching || process.env.NODE_ENV === 'production')) {
+    throw new Error(MOCK_IN_BUILD_ERROR)
   }
 
   const baseConfig: UserConfigExport<'webpack5'> = {
