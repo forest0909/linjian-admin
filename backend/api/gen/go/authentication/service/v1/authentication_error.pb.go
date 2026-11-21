@@ -27,12 +27,13 @@ type AuthenticationErrorReason int32
 
 const (
 	// 400
-	AuthenticationErrorReason_BAD_REQUEST        AuthenticationErrorReason = 0 // 错误请求
-	AuthenticationErrorReason_INVALID_GRANT_TYPE AuthenticationErrorReason = 1 // 400
-	AuthenticationErrorReason_INVALID_USERID     AuthenticationErrorReason = 2 // 用户ID无效
-	AuthenticationErrorReason_INVALID_TOKEN      AuthenticationErrorReason = 3 // token无效
-	AuthenticationErrorReason_INVALID_PASSWORD   AuthenticationErrorReason = 4 // 密码无效
-	AuthenticationErrorReason_INVALID_CAPTCHA    AuthenticationErrorReason = 6 // 验证码缺失或错误
+	AuthenticationErrorReason_BAD_REQUEST          AuthenticationErrorReason = 0 // 错误请求
+	AuthenticationErrorReason_INVALID_GRANT_TYPE   AuthenticationErrorReason = 1 // 400
+	AuthenticationErrorReason_INVALID_USERID       AuthenticationErrorReason = 2 // 用户ID无效
+	AuthenticationErrorReason_INVALID_TOKEN        AuthenticationErrorReason = 3 // token无效
+	AuthenticationErrorReason_INVALID_PASSWORD     AuthenticationErrorReason = 4 // 密码无效
+	AuthenticationErrorReason_INVALID_CAPTCHA      AuthenticationErrorReason = 6 // 验证码缺失或错误
+	AuthenticationErrorReason_MINIAPP_CODE_INVALID AuthenticationErrorReason = 7 // 微信 code 无效、已使用或过期
 	// 401
 	AuthenticationErrorReason_UNAUTHORIZED            AuthenticationErrorReason = 100 // 未授权
 	AuthenticationErrorReason_USER_FREEZE             AuthenticationErrorReason = 101 // 用户被冻结
@@ -44,7 +45,9 @@ const (
 	// 402
 	AuthenticationErrorReason_PAYMENT_REQUIRED AuthenticationErrorReason = 200 // 需要支付
 	// 403
-	AuthenticationErrorReason_FORBIDDEN AuthenticationErrorReason = 300 // 禁止访问
+	AuthenticationErrorReason_FORBIDDEN                    AuthenticationErrorReason = 300 // 禁止访问
+	AuthenticationErrorReason_MINIAPP_PHONE_NOT_REGISTERED AuthenticationErrorReason = 301 // 手机号没有对应的账号
+	AuthenticationErrorReason_MINIAPP_NOT_BOUND            AuthenticationErrorReason = 302 // 这个微信没有绑定账号
 	// 404
 	AuthenticationErrorReason_NOT_FOUND               AuthenticationErrorReason = 400 // 找不到资源
 	AuthenticationErrorReason_USER_NOT_FOUND          AuthenticationErrorReason = 401 // 用户不存在
@@ -59,7 +62,9 @@ const (
 	// 408
 	AuthenticationErrorReason_REQUEST_TIMEOUT AuthenticationErrorReason = 800 // 请求超时
 	// 409
-	AuthenticationErrorReason_CONFLICT AuthenticationErrorReason = 900 // 冲突
+	AuthenticationErrorReason_CONFLICT                AuthenticationErrorReason = 900 // 冲突
+	AuthenticationErrorReason_MINIAPP_PHONE_AMBIGUOUS AuthenticationErrorReason = 901 // 手机号对应多个账号
+	AuthenticationErrorReason_MINIAPP_BOUND_TO_OTHER  AuthenticationErrorReason = 902 // 这个微信已绑定其他账号
 	// 410
 	AuthenticationErrorReason_GONE AuthenticationErrorReason = 1000 // 已删除
 	// 411
@@ -106,6 +111,7 @@ const (
 	AuthenticationErrorReason_BAD_GATEWAY AuthenticationErrorReason = 2200 // 错误网关
 	// 503
 	AuthenticationErrorReason_SERVICE_UNAVAILABLE AuthenticationErrorReason = 2300 // 服务不可用
+	AuthenticationErrorReason_MINIAPP_UNAVAILABLE AuthenticationErrorReason = 2301 // 微信登录暂不可用
 	// 504
 	AuthenticationErrorReason_GATEWAY_TIMEOUT AuthenticationErrorReason = 2400 // 网关超时
 	// 505
@@ -135,6 +141,7 @@ var (
 		3:    "INVALID_TOKEN",
 		4:    "INVALID_PASSWORD",
 		6:    "INVALID_CAPTCHA",
+		7:    "MINIAPP_CODE_INVALID",
 		100:  "UNAUTHORIZED",
 		101:  "USER_FREEZE",
 		103:  "INCORRECT_APP_SECRET",
@@ -144,6 +151,8 @@ var (
 		107:  "TOKEN_NOT_EXIST",
 		200:  "PAYMENT_REQUIRED",
 		300:  "FORBIDDEN",
+		301:  "MINIAPP_PHONE_NOT_REGISTERED",
+		302:  "MINIAPP_NOT_BOUND",
 		400:  "NOT_FOUND",
 		401:  "USER_NOT_FOUND",
 		402:  "ACCESS_TOKEN_NOT_FOUND",
@@ -153,6 +162,8 @@ var (
 		700:  "PROXY_AUTHENTICATION_REQUIRED",
 		800:  "REQUEST_TIMEOUT",
 		900:  "CONFLICT",
+		901:  "MINIAPP_PHONE_AMBIGUOUS",
+		902:  "MINIAPP_BOUND_TO_OTHER",
 		1000: "GONE",
 		1010: "LENGTH_REQUIRED",
 		1020: "PRECONDITION_FAILED",
@@ -176,6 +187,7 @@ var (
 		2100: "NOT_IMPLEMENTED",
 		2200: "BAD_GATEWAY",
 		2300: "SERVICE_UNAVAILABLE",
+		2301: "MINIAPP_UNAVAILABLE",
 		2400: "GATEWAY_TIMEOUT",
 		2500: "HTTP_VERSION_NOT_SUPPORTED",
 		2600: "VARIANT_ALSO_NEGOTIATES",
@@ -193,6 +205,7 @@ var (
 		"INVALID_TOKEN":                   3,
 		"INVALID_PASSWORD":                4,
 		"INVALID_CAPTCHA":                 6,
+		"MINIAPP_CODE_INVALID":            7,
 		"UNAUTHORIZED":                    100,
 		"USER_FREEZE":                     101,
 		"INCORRECT_APP_SECRET":            103,
@@ -202,6 +215,8 @@ var (
 		"TOKEN_NOT_EXIST":                 107,
 		"PAYMENT_REQUIRED":                200,
 		"FORBIDDEN":                       300,
+		"MINIAPP_PHONE_NOT_REGISTERED":    301,
+		"MINIAPP_NOT_BOUND":               302,
 		"NOT_FOUND":                       400,
 		"USER_NOT_FOUND":                  401,
 		"ACCESS_TOKEN_NOT_FOUND":          402,
@@ -211,6 +226,8 @@ var (
 		"PROXY_AUTHENTICATION_REQUIRED":   700,
 		"REQUEST_TIMEOUT":                 800,
 		"CONFLICT":                        900,
+		"MINIAPP_PHONE_AMBIGUOUS":         901,
+		"MINIAPP_BOUND_TO_OTHER":          902,
 		"GONE":                            1000,
 		"LENGTH_REQUIRED":                 1010,
 		"PRECONDITION_FAILED":             1020,
@@ -234,6 +251,7 @@ var (
 		"NOT_IMPLEMENTED":                 2100,
 		"BAD_GATEWAY":                     2200,
 		"SERVICE_UNAVAILABLE":             2300,
+		"MINIAPP_UNAVAILABLE":             2301,
 		"GATEWAY_TIMEOUT":                 2400,
 		"HTTP_VERSION_NOT_SUPPORTED":      2500,
 		"VARIANT_ALSO_NEGOTIATES":         2600,
@@ -277,14 +295,15 @@ var File_authentication_service_v1_authentication_error_proto protoreflect.FileD
 
 const file_authentication_service_v1_authentication_error_proto_rawDesc = "" +
 	"\n" +
-	"4authentication/service/v1/authentication_error.proto\x12\x19authentication.service.v1\x1a\x13errors/errors.proto*\xb1\r\n" +
+	"4authentication/service/v1/authentication_error.proto\x12\x19authentication.service.v1\x1a\x13errors/errors.proto*\xff\x0e\n" +
 	"\x19AuthenticationErrorReason\x12\x15\n" +
 	"\vBAD_REQUEST\x10\x00\x1a\x04\xa8E\x90\x03\x12\x1c\n" +
 	"\x12INVALID_GRANT_TYPE\x10\x01\x1a\x04\xa8E\x90\x03\x12\x18\n" +
 	"\x0eINVALID_USERID\x10\x02\x1a\x04\xa8E\x90\x03\x12\x17\n" +
 	"\rINVALID_TOKEN\x10\x03\x1a\x04\xa8E\x90\x03\x12\x1a\n" +
 	"\x10INVALID_PASSWORD\x10\x04\x1a\x04\xa8E\x90\x03\x12\x19\n" +
-	"\x0fINVALID_CAPTCHA\x10\x06\x1a\x04\xa8E\x90\x03\x12\x16\n" +
+	"\x0fINVALID_CAPTCHA\x10\x06\x1a\x04\xa8E\x90\x03\x12\x1e\n" +
+	"\x14MINIAPP_CODE_INVALID\x10\a\x1a\x04\xa8E\x90\x03\x12\x16\n" +
 	"\fUNAUTHORIZED\x10d\x1a\x04\xa8E\x91\x03\x12\x15\n" +
 	"\vUSER_FREEZE\x10e\x1a\x04\xa8E\x91\x03\x12\x1e\n" +
 	"\x14INCORRECT_APP_SECRET\x10g\x1a\x04\xa8E\x91\x03\x12 \n" +
@@ -293,7 +312,9 @@ const file_authentication_service_v1_authentication_error_proto_rawDesc = "" +
 	"\rTOKEN_EXPIRED\x10j\x1a\x04\xa8E\x91\x03\x12\x19\n" +
 	"\x0fTOKEN_NOT_EXIST\x10k\x1a\x04\xa8E\x91\x03\x12\x1b\n" +
 	"\x10PAYMENT_REQUIRED\x10\xc8\x01\x1a\x04\xa8E\x92\x03\x12\x14\n" +
-	"\tFORBIDDEN\x10\xac\x02\x1a\x04\xa8E\x93\x03\x12\x14\n" +
+	"\tFORBIDDEN\x10\xac\x02\x1a\x04\xa8E\x93\x03\x12'\n" +
+	"\x1cMINIAPP_PHONE_NOT_REGISTERED\x10\xad\x02\x1a\x04\xa8E\x93\x03\x12\x1c\n" +
+	"\x11MINIAPP_NOT_BOUND\x10\xae\x02\x1a\x04\xa8E\x93\x03\x12\x14\n" +
 	"\tNOT_FOUND\x10\x90\x03\x1a\x04\xa8E\x94\x03\x12\x19\n" +
 	"\x0eUSER_NOT_FOUND\x10\x91\x03\x1a\x04\xa8E\x94\x03\x12!\n" +
 	"\x16ACCESS_TOKEN_NOT_FOUND\x10\x92\x03\x1a\x04\xa8E\x94\x03\x12\"\n" +
@@ -302,7 +323,9 @@ const file_authentication_service_v1_authentication_error_proto_rawDesc = "" +
 	"\x0eNOT_ACCEPTABLE\x10\xd8\x04\x1a\x04\xa8E\x96\x03\x12(\n" +
 	"\x1dPROXY_AUTHENTICATION_REQUIRED\x10\xbc\x05\x1a\x04\xa8E\x97\x03\x12\x1a\n" +
 	"\x0fREQUEST_TIMEOUT\x10\xa0\x06\x1a\x04\xa8E\x98\x03\x12\x13\n" +
-	"\bCONFLICT\x10\x84\a\x1a\x04\xa8E\x99\x03\x12\x0f\n" +
+	"\bCONFLICT\x10\x84\a\x1a\x04\xa8E\x99\x03\x12\"\n" +
+	"\x17MINIAPP_PHONE_AMBIGUOUS\x10\x85\a\x1a\x04\xa8E\x99\x03\x12!\n" +
+	"\x16MINIAPP_BOUND_TO_OTHER\x10\x86\a\x1a\x04\xa8E\x99\x03\x12\x0f\n" +
 	"\x04GONE\x10\xe8\a\x1a\x04\xa8E\x9a\x03\x12\x1a\n" +
 	"\x0fLENGTH_REQUIRED\x10\xf2\a\x1a\x04\xa8E\x9b\x03\x12\x1e\n" +
 	"\x13PRECONDITION_FAILED\x10\xfc\a\x1a\x04\xa8E\x9c\x03\x12\x1c\n" +
@@ -325,7 +348,8 @@ const file_authentication_service_v1_authentication_error_proto_rawDesc = "" +
 	"\x15INTERNAL_SERVER_ERROR\x10\xd0\x0f\x1a\x04\xa8E\xf4\x03\x12\x1a\n" +
 	"\x0fNOT_IMPLEMENTED\x10\xb4\x10\x1a\x04\xa8E\xf5\x03\x12\x16\n" +
 	"\vBAD_GATEWAY\x10\x98\x11\x1a\x04\xa8E\xf6\x03\x12\x1e\n" +
-	"\x13SERVICE_UNAVAILABLE\x10\xfc\x11\x1a\x04\xa8E\xf7\x03\x12\x1a\n" +
+	"\x13SERVICE_UNAVAILABLE\x10\xfc\x11\x1a\x04\xa8E\xf7\x03\x12\x1e\n" +
+	"\x13MINIAPP_UNAVAILABLE\x10\xfd\x11\x1a\x04\xa8E\xf7\x03\x12\x1a\n" +
 	"\x0fGATEWAY_TIMEOUT\x10\xe0\x12\x1a\x04\xa8E\xf8\x03\x12%\n" +
 	"\x1aHTTP_VERSION_NOT_SUPPORTED\x10\xc4\x13\x1a\x04\xa8E\xf9\x03\x12\"\n" +
 	"\x17VARIANT_ALSO_NEGOTIATES\x10\xa8\x14\x1a\x04\xa8E\xfa\x03\x12\x1f\n" +

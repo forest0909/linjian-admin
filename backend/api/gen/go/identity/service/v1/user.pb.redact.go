@@ -504,7 +504,8 @@ func (x *PhoneVerification) Redact() {
 
 	// Safe field: Phone
 
-	// Safe field: Code
+	// Redacting field: Code
+	x.Code = ``
 }
 
 // Ensure EmailVerification implements the Redactor interface at compile time.
@@ -518,7 +519,8 @@ func (x *EmailVerification) Redact() {
 
 	// Safe field: Email
 
-	// Safe field: Code
+	// Redacting field: Code
+	x.Code = ``
 }
 
 // Ensure CountUserResponse implements the Redactor interface at compile time.

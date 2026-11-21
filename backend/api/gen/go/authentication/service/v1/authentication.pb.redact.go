@@ -203,7 +203,9 @@ func (x *LoginRequest) Redact() {
 	RefreshTokenTmp := ``
 	x.RefreshToken = &RefreshTokenTmp
 
-	// Safe field: Code
+	// Redacting field: Code
+	CodeTmp := ``
+	x.Code = &CodeTmp
 
 	// Safe field: ClientType
 
@@ -230,6 +232,8 @@ func (x *LoginResponse) Redact() {
 	// Safe field: Scope
 
 	// Safe field: IdToken
+
+	// Safe field: MiniappBound
 }
 
 // Ensure LogoutRequest implements the Redactor interface at compile time.

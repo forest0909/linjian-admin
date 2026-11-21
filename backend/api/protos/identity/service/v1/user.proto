@@ -439,6 +439,7 @@ message PhoneVerification {
   ];
 
   string code = 2 [
+    (redact.value).string = "",
     json_name = "code",
     (google.api.field_behavior) = REQUIRED,
     (gnostic.openapi.v3.property) = { description: "短信验证码" }
@@ -453,6 +454,7 @@ message EmailVerification {
   ];
 
   string code = 2 [
+    (redact.value).string = "",
     json_name = "code",
     (google.api.field_behavior) = REQUIRED,
     (gnostic.openapi.v3.property) = { description: "邮箱验证码" }

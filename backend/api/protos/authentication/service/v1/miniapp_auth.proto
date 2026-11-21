@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package authentication.service.v1;
+
+import "gnostic/openapi/v3/annotations.proto";
+
+import "google/protobuf/timestamp.proto";
+
+import "redact/v1/redact.proto";
+
+import "validate/validate.proto";
+
+// 一键登录 - 请求。两个 code 都只由服务端向微信兑换；请求里没有 openid 和手机号字段。
+message MiniappPhoneLoginRequest {
+  string code = 1 [
+    (redact.value).string = "",
+    json_name = "code",
+    (gnostic.openapi.v3.property) = {description: "wx.login 返回的 code"},
+    (validate.rules).string = {min_len: 1, max_len: 128}
+  ]; // wx.login 返回的 code
+
+  string phone_code = 2 [
+    (redact.value).string = "",
+    json_name = "phoneCode",
+    (gnostic.openapi.v3.property) = {description: "getPhoneNumber 返回的 code"},
+    (validate.rules).string = {min_len: 1, max_len: 128}
+  ]; // getPhoneNumber 返回的 code
+}
+
+// 静默续期 - 请求。只带新的 wx.login code。
+message MiniappSilentLoginRequest {
+  string code = 1 [
+    (redact.value).string = "",
+    json_name = "code",
+    (gnostic.openapi.v3.property) = {description: "wx.login 返回的 code"},
+    (validate.rules).string = {min_len: 1, max_len: 128}
+  ]; // wx.login 返回的 code
+}
+
+// 微信小程序绑定
+message MiniappBinding {
+  uint32 id = 1 [
+    json_name = "id",
+    (gnostic.openapi.v3.property) = {description: "绑定ID（sys_user_credentials.id）"}
+  ]; // 绑定ID（sys_user_credentials.id）
+
+  string openid_masked = 2 [
+    json_name = "openidMasked",
+    (gnostic.openapi.v3.property) = {description: "打码后的 openid（前 6 后 4）"}
+  ]; // 打码后的 openid（前 6 后 4）
+
+  google.protobuf.Timestamp created_at = 3 [
+    json_name = "createdAt",
+    (gnostic.openapi.v3.property) = {description: "绑定时间"}
+  ]; // 绑定时间
+}
+
+// 查询用户的微信小程序绑定 - 请求
+message ListMiniappBindingsRequest {
+  uint32 user_id = 1 [
+    json_name = "userId",
+    (gnostic.openapi.v3.property) = {description: "用户ID"}
+  ]; // 用户ID
+}
+
+// 查询用户的微信小程序绑定 - 回应
+message ListMiniappBindingsResponse {
+  repeated MiniappBinding items = 1;
+}
+
+// 解除用户的微信小程序绑定 - 请求
+message DeleteMiniappBindingRequest {
+  uint32 user_id = 1 [
+    json_name = "userId",
+    (gnostic.openapi.v3.property) = {description: "用户ID"}
+  ]; // 用户ID
+
+  uint32 id = 2 [
+    json_name = "id",
+    (gnostic.openapi.v3.property) = {description: "绑定ID"}
+  ]; // 绑定ID
+}

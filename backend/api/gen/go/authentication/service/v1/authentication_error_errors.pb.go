@@ -95,6 +95,20 @@ func ErrorInvalidCaptcha(format string, args ...interface{}) *errors.Error {
 	return errors.New(400, AuthenticationErrorReason_INVALID_CAPTCHA.String(), fmt.Sprintf(format, args...))
 }
 
+// 微信 code 无效、已使用或过期
+func IsMiniappCodeInvalid(err error) bool {
+	if err == nil {
+		return false
+	}
+	e := errors.FromError(err)
+	return e.Reason == AuthenticationErrorReason_MINIAPP_CODE_INVALID.String() && e.Code == 400
+}
+
+// 微信 code 无效、已使用或过期
+func ErrorMiniappCodeInvalid(format string, args ...interface{}) *errors.Error {
+	return errors.New(400, AuthenticationErrorReason_MINIAPP_CODE_INVALID.String(), fmt.Sprintf(format, args...))
+}
+
 // 401
 func IsUnauthorized(err error) bool {
 	if err == nil {
@@ -221,6 +235,34 @@ func ErrorForbidden(format string, args ...interface{}) *errors.Error {
 	return errors.New(403, AuthenticationErrorReason_FORBIDDEN.String(), fmt.Sprintf(format, args...))
 }
 
+// 手机号没有对应的账号
+func IsMiniappPhoneNotRegistered(err error) bool {
+	if err == nil {
+		return false
+	}
+	e := errors.FromError(err)
+	return e.Reason == AuthenticationErrorReason_MINIAPP_PHONE_NOT_REGISTERED.String() && e.Code == 403
+}
+
+// 手机号没有对应的账号
+func ErrorMiniappPhoneNotRegistered(format string, args ...interface{}) *errors.Error {
+	return errors.New(403, AuthenticationErrorReason_MINIAPP_PHONE_NOT_REGISTERED.String(), fmt.Sprintf(format, args...))
+}
+
+// 这个微信没有绑定账号
+func IsMiniappNotBound(err error) bool {
+	if err == nil {
+		return false
+	}
+	e := errors.FromError(err)
+	return e.Reason == AuthenticationErrorReason_MINIAPP_NOT_BOUND.String() && e.Code == 403
+}
+
+// 这个微信没有绑定账号
+func ErrorMiniappNotBound(format string, args ...interface{}) *errors.Error {
+	return errors.New(403, AuthenticationErrorReason_MINIAPP_NOT_BOUND.String(), fmt.Sprintf(format, args...))
+}
+
 // 404
 func IsNotFound(err error) bool {
 	if err == nil {
@@ -345,6 +387,34 @@ func IsConflict(err error) bool {
 // 409
 func ErrorConflict(format string, args ...interface{}) *errors.Error {
 	return errors.New(409, AuthenticationErrorReason_CONFLICT.String(), fmt.Sprintf(format, args...))
+}
+
+// 手机号对应多个账号
+func IsMiniappPhoneAmbiguous(err error) bool {
+	if err == nil {
+		return false
+	}
+	e := errors.FromError(err)
+	return e.Reason == AuthenticationErrorReason_MINIAPP_PHONE_AMBIGUOUS.String() && e.Code == 409
+}
+
+// 手机号对应多个账号
+func ErrorMiniappPhoneAmbiguous(format string, args ...interface{}) *errors.Error {
+	return errors.New(409, AuthenticationErrorReason_MINIAPP_PHONE_AMBIGUOUS.String(), fmt.Sprintf(format, args...))
+}
+
+// 这个微信已绑定其他账号
+func IsMiniappBoundToOther(err error) bool {
+	if err == nil {
+		return false
+	}
+	e := errors.FromError(err)
+	return e.Reason == AuthenticationErrorReason_MINIAPP_BOUND_TO_OTHER.String() && e.Code == 409
+}
+
+// 这个微信已绑定其他账号
+func ErrorMiniappBoundToOther(format string, args ...interface{}) *errors.Error {
+	return errors.New(409, AuthenticationErrorReason_MINIAPP_BOUND_TO_OTHER.String(), fmt.Sprintf(format, args...))
 }
 
 // 410
@@ -667,6 +737,20 @@ func IsServiceUnavailable(err error) bool {
 // 503
 func ErrorServiceUnavailable(format string, args ...interface{}) *errors.Error {
 	return errors.New(503, AuthenticationErrorReason_SERVICE_UNAVAILABLE.String(), fmt.Sprintf(format, args...))
+}
+
+// 微信登录暂不可用
+func IsMiniappUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	e := errors.FromError(err)
+	return e.Reason == AuthenticationErrorReason_MINIAPP_UNAVAILABLE.String() && e.Code == 503
+}
+
+// 微信登录暂不可用
+func ErrorMiniappUnavailable(format string, args ...interface{}) *errors.Error {
+	return errors.New(503, AuthenticationErrorReason_MINIAPP_UNAVAILABLE.String(), fmt.Sprintf(format, args...))
 }
 
 // 504

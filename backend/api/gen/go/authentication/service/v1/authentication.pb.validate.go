@@ -301,6 +301,10 @@ func (m *LoginResponse) validate(all bool) error {
 		// no validation rules for IdToken
 	}
 
+	if m.MiniappBound != nil {
+		// no validation rules for MiniappBound
+	}
+
 	if len(errors) > 0 {
 		return LoginResponseMultiError(errors)
 	}

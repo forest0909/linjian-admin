@@ -831,7 +831,8 @@ export type authenticationservicev1_GrantType =
   | 'implicit'
   | 'password'
   | 'refresh_token';
-// 客户端类型
+// 客户端类型。
+// 单独成文件是为了让 authentication.proto 和 user_token.proto 都能引用它而不成环。
 export type authenticationservicev1_ClientType =
   | 'admin'
   | 'app';
@@ -840,6 +841,7 @@ export type authenticationservicev1_LoginResponse = {
   access_token: string | undefined;
   expires_in: number | undefined;
   id_token?: string;
+  miniapp_bound?: boolean;
   // refresh token 已迁移 HttpOnly Cookie 传输（2026-08 迁移），不再进响应体：
   // refresh_token / refresh_expires_in 字段已删除（历史残留，所有路径均未赋值）。
   scope?: string;
@@ -3991,6 +3993,119 @@ export type permissionservicev1_SyncMenusRequest = {
 export type permissionservicev1_SyncMenusRequest_Mode =
   | 'MERGE'
   | 'REPLACE';
+// 微信小程序登录认证服务
+export interface MiniappAuthService {
+  // 手机号一键登录
+  LoginByPhone(
+    request: authenticationservicev1_MiniappPhoneLoginRequest,
+  ): Promise<authenticationservicev1_LoginResponse>;
+  // 静默续期
+  SilentLogin(
+    request: authenticationservicev1_MiniappSilentLoginRequest,
+  ): Promise<authenticationservicev1_LoginResponse>;
+  // 退出（只接受小程序令牌）
+  Logout(
+    request: wellKnownEmpty,
+  ): Promise<wellKnownEmpty>;
+  // 查询用户的微信小程序绑定
+  ListUserBindings(
+    request: authenticationservicev1_ListMiniappBindingsRequest,
+  ): Promise<authenticationservicev1_ListMiniappBindingsResponse>;
+  // 解除用户的微信小程序绑定
+  DeleteUserBinding(
+    request: authenticationservicev1_DeleteMiniappBindingRequest,
+  ): Promise<wellKnownEmpty>;
+}
+
+export function createMiniappAuthServiceClient(
+  transport: ClientTransport,
+): MiniappAuthService {
+  return {
+    LoginByPhone(request) {
+      const path = `admin/v1/miniapp/login/phone`;
+      const body = JSON.stringify(request);
+      return transport.unary(path, 'POST', body, {
+        service: 'MiniappAuthService',
+        method: 'LoginByPhone',
+      }) as Promise<authenticationservicev1_LoginResponse>;
+    },
+    SilentLogin(request) {
+      const path = `admin/v1/miniapp/login/silent`;
+      const body = JSON.stringify(request);
+      return transport.unary(path, 'POST', body, {
+        service: 'MiniappAuthService',
+        method: 'SilentLogin',
+      }) as Promise<authenticationservicev1_LoginResponse>;
+    },
+    Logout(request) {
+      const path = `admin/v1/miniapp/logout`;
+      const body = JSON.stringify(request);
+      return transport.unary(path, 'POST', body, {
+        service: 'MiniappAuthService',
+        method: 'Logout',
+      }) as Promise<wellKnownEmpty>;
+    },
+    ListUserBindings(request) {
+      if (request.userId === undefined || request.userId === null) {
+        throw new Error('missing required field request.user_id');
+      }
+      const path = `admin/v1/users/${request.userId}/miniapp-bindings`;
+      const body = null;
+      return transport.unary(path, 'GET', body, {
+        service: 'MiniappAuthService',
+        method: 'ListUserBindings',
+      }) as Promise<authenticationservicev1_ListMiniappBindingsResponse>;
+    },
+    DeleteUserBinding(request) {
+      if (request.userId === undefined || request.userId === null) {
+        throw new Error('missing required field request.user_id');
+      }
+      if (request.id === undefined || request.id === null) {
+        throw new Error('missing required field request.id');
+      }
+      const path = `admin/v1/users/${request.userId}/miniapp-bindings/${request.id}`;
+      const body = null;
+      return transport.unary(path, 'DELETE', body, {
+        service: 'MiniappAuthService',
+        method: 'DeleteUserBinding',
+      }) as Promise<wellKnownEmpty>;
+    },
+  };
+}
+// 一键登录 - 请求。两个 code 都只由服务端向微信兑换；请求里没有 openid 和手机号字段。
+export type authenticationservicev1_MiniappPhoneLoginRequest = {
+  code: string | undefined;
+  phoneCode: string | undefined;
+};
+
+// 静默续期 - 请求。只带新的 wx.login code。
+export type authenticationservicev1_MiniappSilentLoginRequest = {
+  code: string | undefined;
+};
+
+// 查询用户的微信小程序绑定 - 请求
+export type authenticationservicev1_ListMiniappBindingsRequest = {
+  userId: number | undefined;
+};
+
+// 查询用户的微信小程序绑定 - 回应
+export type authenticationservicev1_ListMiniappBindingsResponse = {
+  items: authenticationservicev1_MiniappBinding[] | undefined;
+};
+
+// 微信小程序绑定
+export type authenticationservicev1_MiniappBinding = {
+  createdAt: undefined | wellKnownTimestamp;
+  id: number | undefined;
+  openidMasked: string | undefined;
+};
+
+// 解除用户的微信小程序绑定 - 请求
+export type authenticationservicev1_DeleteMiniappBindingRequest = {
+  id: number | undefined;
+  userId: number | undefined;
+};
+
 // 在线会话管理服务（在线用户列表 + 强制下线）
 export interface OnlineSessionService {
   // 查询在线会话列表
@@ -6631,6 +6746,7 @@ export class ApiClient {
   private _languageService?: LanguageService;
   private _loginAuditLogService?: LoginAuditLogService;
   private _menuService?: MenuService;
+  private _miniappAuthService?: MiniappAuthService;
   private _onlineSessionService?: OnlineSessionService;
   private _operationAuditLogService?: OperationAuditLogService;
   private _orgUnitService?: OrgUnitService;
@@ -6709,6 +6825,10 @@ export class ApiClient {
 
   get menuService(): MenuService {
     return this._menuService ??= createMenuServiceClient(this._transport);
+  }
+
+  get miniappAuthService(): MiniappAuthService {
+    return this._miniappAuthService ??= createMiniappAuthServiceClient(this._transport);
   }
 
   get onlineSessionService(): OnlineSessionService {

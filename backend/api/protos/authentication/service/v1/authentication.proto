@@ -17,6 +17,9 @@ import "validate/validate.proto";
 
 import "identity/service/v1/user.proto";
 
+// ClientType 定义在 client_type.proto（为避免与 user_token.proto 成环而挪出）。
+// 用 import public，引用本文件的 proto 仍能直接用 authentication.service.v1.ClientType。
+import public "authentication/service/v1/client_type.proto";
 import "authentication/service/v1/user_token.proto";
 
 // 用户登录认证服务
@@ -70,12 +73,6 @@ enum GrantType {
 enum TokenType {
   bearer = 0; // Bearer
   mac = 1; // MAC
-}
-
-// 客户端类型
-enum ClientType {
-  admin = 0; // 管理端
-  app = 1; // APP
 }
 
 // 令牌类别
@@ -165,6 +162,7 @@ message LoginRequest {
   ]; // 更新令牌，用来获取下一次的访问令牌，必选项。
 
   optional string code = 30 [
+    (redact.value).string = "",
     json_name = "code",
     (gnostic.openapi.v3.property) = {
       description: "授权请求中收到的一次性验证/认证码。(当使用授权码模式时)"
@@ -233,6 +231,13 @@ message LoginResponse {
       description: "ID 令牌，OpenID Connect 扩展中定义的 JWT 格式令牌"
     }
   ]; // ID 令牌，OpenID Connect 扩展中定义的 JWT 格式令牌
+
+  optional bool miniapp_bound = 8 [
+    json_name = "miniapp_bound",
+    (gnostic.openapi.v3.property) = {
+      description: "app 登录时返回：true 表示这个微信到本用户的绑定已在库里，令牌过期后可以静默续期。"
+    }
+  ]; // app 登录时返回：true 表示这个微信到本用户的绑定已在库里，令牌过期后可以静默续期。
 }
 
 // 用户登出 - 请求

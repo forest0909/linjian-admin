@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package authentication.service.v1;
+
+// 客户端类型。
+// 单独成文件是为了让 authentication.proto 和 user_token.proto 都能引用它而不成环。
+enum ClientType {
+  admin = 0; // 管理端
+  app = 1; // APP
+}
