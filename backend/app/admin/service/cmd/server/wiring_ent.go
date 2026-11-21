@@ -187,6 +187,9 @@ func initApp(ctx *bootstrap.Context) (*kratos.App, func(), error) {
 	// 审计日志服务端导出（XLSX/CSV）：手动注册二进制响应路由，见 rest_server 的 registerFileTransfer 同段
 	auditExportService := service.NewAuditExportService(ctx, loginAuditLogRepo, operationAuditLogRepo, accessTokenChecker)
 
+	// 小程序统一的下线函数：小程序退出、在线会话踢下线、管理端解绑共用
+	bindingRevoker := service.NewBindingRevoker(ctx, userCredentialRepo, authenticator)
+
 	// 认证
 	authenticationService := service.NewAuthenticationService(ctx, userRepo, userCredentialRepo, roleRepo, membershipRepo, orgUnitRepo, roleOrgUnitRepo, roleFieldPermissionRepo, permissionRepo, authenticator, clientType, captcha, loginRateLimiter, miniappRuntime)
 
@@ -218,7 +221,7 @@ func initApp(ctx *bootstrap.Context) (*kratos.App, func(), error) {
 	operationAuditLogService := service.NewOperationAuditLogService(ctx, operationAuditLogRepo)
 
 	// 运维观测与门户
-	onlineSessionService := service.NewOnlineSessionService(ctx, authenticator)
+	onlineSessionService := service.NewOnlineSessionService(ctx, authenticator, bindingRevoker)
 	adminPortalService := service.NewAdminPortalService(ctx, menuRepo, roleRepo, userRepo, permissionRepo)
 
 	// 站内信
@@ -231,7 +234,7 @@ func initApp(ctx *bootstrap.Context) (*kratos.App, func(), error) {
 
 	// ── register:service ── 新模块服务在此行后注册(make register 工具锚点,勿删)
 	configService := service.NewConfigService(ctx, configRepo)
-	miniappAuthService := service.NewMiniappAuthService(ctx, miniappRuntime, authenticationService, userRepo, userCredentialRepo)
+	miniappAuthService := service.NewMiniappAuthService(ctx, miniappRuntime, authenticationService, userRepo, userCredentialRepo, roleRepo, bindingRevoker)
 
 	// ═══════════════════════ 五、传输层(internal/server) ═══════════════════════
 

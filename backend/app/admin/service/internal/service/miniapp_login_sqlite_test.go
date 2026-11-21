@@ -28,6 +28,8 @@ func newMiniappAuthServiceForTest(e *miniappEnv, logger *bLogger.Helper, runtime
 		authn:              e.authn,
 		userRepo:           e.userRepo,
 		userCredentialRepo: e.credRepo,
+		roleRepo:           e.authn.roleRepo,
+		revoker:            e.revoker,
 	}
 }
 

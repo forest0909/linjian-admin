@@ -631,17 +631,23 @@ func (s *UserService) Update(ctx context.Context, req *identityV1.UpdateUserRequ
 		}
 	}
 
+	passwordRevokeFailed := false
 	if resetsPassword {
 		// 重置密码成功后吊销目标用户全部令牌，强制其重新登录，
 		// 防止凭据已泄露的场景下旧令牌继续可用。
 		if rerr := s.authenticator.RevokeUserTokenAllClientTypes(ctx, req.GetId()); rerr != nil {
 			s.log.Errorf(ctx, "revoke tokens after password reset failed for user [%d]: %v", req.GetId(), rerr)
+			passwordRevokeFailed = true
 		}
 	}
 
 	if appRevokeFailed {
 		// 号码已经改了，但旧的小程序令牌没清干净：已签发的 app 令牌在自己的有效期内还能用。
 		return nil, adminV1.ErrorServiceUnavailable("mobile updated but session revocation failed")
+	}
+	if passwordRevokeFailed {
+		// 密码已经重置、微信绑定已经删了，但旧令牌没清干净。
+		return nil, adminV1.ErrorServiceUnavailable("password reset but session revocation failed")
 	}
 
 	return &emptypb.Empty{}, nil
@@ -651,13 +657,20 @@ func (s *UserService) Update(ctx context.Context, req *identityV1.UpdateUserRequ
 // 目标用户当前的每个角色都必须在操作人的权限上限内。roleIDs 由仓储在锁住目标用户行之后读出。
 func (s *UserService) ensureCredentialWriteAllowed(ctx context.Context, operator *authenticationV1.UserTokenPayload,
 	targetUserID uint32, roleIDs []uint32) error {
+	return ensureTargetWithinOperator(ctx, s.roleRepo, s.userRepo.ListRoleIDsByUserID, operator, targetUserID, roleIDs)
+}
+
+// ensureTargetWithinOperator 目标用户的权限上限检查：目标用户当前的每个角色都必须在操作人的权限上限内。
+// 写目标用户的登录凭证（重置密码、改手机号）和解除他的微信绑定之前都要过这一关。
+func ensureTargetWithinOperator(ctx context.Context, roleRepo *data.RoleRepo, listRoles operatorRoleIDsFunc,
+	operator *authenticationV1.UserTokenPayload, targetUserID uint32, roleIDs []uint32) error {
 	// 平台管理员不受限；操作人改自己的账号不存在越权。
 	if operator.GetIsPlatformAdmin() || targetUserID == operator.GetUserId() {
 		return nil
 	}
-	err := ensureRolesWithinOperator(ctx, s.roleRepo, s.userRepo.ListRoleIDsByUserID, operator, sliceutil.Unique(roleIDs))
+	err := ensureRolesWithinOperator(ctx, roleRepo, listRoles, operator, sliceutil.Unique(roleIDs))
 	if adminV1.IsForbidden(err) {
-		// 上限检查的文案是按「分配角色」写的，这里换成写凭证的说法。
+		// 上限检查的文案是按「分配角色」写的，这里换成对目标用户的说法。
 		return adminV1.ErrorForbidden("target user has higher authority than you")
 	}
 	return err
@@ -837,9 +850,11 @@ func (s *UserService) EditUserPassword(ctx context.Context, req *identityV1.Edit
 		return nil, err
 	}
 
-	// 重置密码成功后吊销目标用户全部令牌，强制其重新登录。
+	// 重置密码成功后吊销目标用户全部令牌，强制其重新登录。密码和微信绑定的删除已经提交；
+	// 吊销失败时返回 503：已签发的令牌在自己的有效期内还能用。
 	if err = s.authenticator.RevokeUserTokenAllClientTypes(ctx, u.GetId()); err != nil {
 		s.log.Errorf(ctx, "revoke tokens after password reset failed for user [%d]: %v", u.GetId(), err)
+		return nil, adminV1.ErrorServiceUnavailable("password reset but session revocation failed")
 	}
 
 	return &emptypb.Empty{}, nil

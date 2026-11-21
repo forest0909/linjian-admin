@@ -164,6 +164,15 @@ func (r *userRepo) guardCredentialWrite(ctx context.Context, tx *ent.Tx, current
 			return outcome, identityV1.ErrorConflict("mobile already in use")
 		}
 	}
+
+	// 号码变了（含清空）或附带重置密码：同一个事务里删掉该用户的全部微信绑定。
+	// 号码和库里一致（没有实际变化）时什么都不做，绑定也不删。
+	if outcome.MobileChanged || resetsPassword {
+		if err := deleteMiniappBindingsInTx(ctx, tx, req.GetId()); err != nil {
+			r.log.Errorf(ctx, "delete miniapp bindings of user [%d] failed: %s", req.GetId(), err.Error())
+			return outcome, identityV1.ErrorInternalServerError("delete miniapp bindings failed")
+		}
+	}
 	return outcome, nil
 }
 
@@ -237,6 +246,12 @@ func (r *UserCredentialRepo) BindVerifiedPhone(ctx context.Context, userID uint3
 		return false, authenticationV1.ErrorInternalServerError("insert phone credential failed")
 	}
 
+	// 旧号码建立的微信绑定不能再用来续期。
+	if err = deleteMiniappBindingsInTx(ctx, tx, userID); err != nil {
+		r.log.Errorf(ctx, "delete miniapp bindings of user [%d] failed: %s", userID, err.Error())
+		return false, authenticationV1.ErrorInternalServerError("delete miniapp bindings failed")
+	}
+
 	if commitErr := commitEntTx(tx, &txCommitted); commitErr != nil {
 		r.log.Errorf(ctx, "transaction commit failed: %s", commitErr.Error())
 		return false, authenticationV1.ErrorInternalServerError("transaction commit failed")
@@ -277,6 +292,11 @@ func (r *UserCredentialRepo) ResetCredentialGuarded(ctx context.Context, userID 
 	}
 	if err = r.ResetCredentialWithTx(ctx, tx, userID, req); err != nil {
 		return err
+	}
+	// 旧密码建立的微信绑定和改密在同一个事务里删掉。
+	if err = deleteMiniappBindingsInTx(ctx, tx, userID); err != nil {
+		r.log.Errorf(ctx, "delete miniapp bindings of user [%d] failed: %s", userID, err.Error())
+		return authenticationV1.ErrorInternalServerError("delete miniapp bindings failed")
 	}
 	if commitErr := commitEntTx(tx, &txCommitted); commitErr != nil {
 		r.log.Errorf(ctx, "transaction commit failed: %s", commitErr.Error())

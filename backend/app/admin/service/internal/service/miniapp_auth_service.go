@@ -6,6 +6,7 @@ import (
 
 	ktransport "github.com/go-kratos/kratos/v2/transport"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"go-wind-admin/third_party/kratos-bootstrap/bootstrap"
 	bLogger "go-wind-admin/third_party/kratos-bootstrap/logger"
@@ -39,6 +40,10 @@ type MiniappAuthService struct {
 	authn              *AuthenticationService
 	userRepo           data.UserRepo
 	userCredentialRepo *data.UserCredentialRepo
+	// roleRepo 解绑前的权限上限检查要用。
+	roleRepo *data.RoleRepo
+	// revoker 统一的下线函数：退出和管理端解绑都走它。
+	revoker *BindingRevoker
 }
 
 func NewMiniappAuthService(
@@ -47,6 +52,8 @@ func NewMiniappAuthService(
 	authn *AuthenticationService,
 	userRepo data.UserRepo,
 	userCredentialRepo *data.UserCredentialRepo,
+	roleRepo *data.RoleRepo,
+	revoker *BindingRevoker,
 ) *MiniappAuthService {
 	return &MiniappAuthService{
 		log:                ctx.NewLoggerHelper("miniapp-auth/service/admin-service"),
@@ -54,11 +61,9 @@ func NewMiniappAuthService(
 		authn:              authn,
 		userRepo:           userRepo,
 		userCredentialRepo: userCredentialRepo,
+		roleRepo:           roleRepo,
+		revoker:            revoker,
 	}
-}
-
-func errMiniappNotImplemented() error {
-	return authenticationV1.ErrorNotImplemented("miniapp auth is not implemented")
 }
 
 func errMiniappUnavailable() error {
@@ -262,7 +267,9 @@ func (s *MiniappAuthService) issue(ctx context.Context, user *identityV1.User, b
 	return s.authn.appLoginResponse(accessToken, true), nil
 }
 
-// Logout 小程序退出。只收 app 令牌；退出本身还没实现。
+// Logout 小程序退出。只收 app 令牌（管理端令牌走管理端自己的 Logout）。
+// 退出就是下线当前会话：删掉这次会话所用的绑定，再吊销该用户的 app 令牌，
+// 这个微信之后必须重新登录。H5 会话没有绑定，只吊销当前令牌。
 func (s *MiniappAuthService) Logout(ctx context.Context, _ *emptypb.Empty) (*emptypb.Empty, error) {
 	operator, err := auth.FromContext(ctx)
 	if err != nil {
@@ -271,15 +278,75 @@ func (s *MiniappAuthService) Logout(ctx context.Context, _ *emptypb.Empty) (*emp
 	if operator.GetClientType() != authenticationV1.ClientType_app {
 		return nil, authenticationV1.ErrorBadRequest("miniapp logout only accepts app token")
 	}
-	return nil, errMiniappNotImplemented()
+	if err = s.revoker.RevokeAppSession(ctx, operator.GetUserId(), operator.GetJti()); err != nil {
+		return nil, err
+	}
+	return &emptypb.Empty{}, nil
 }
 
-// ListUserBindings 查询用户的微信小程序绑定。
-func (s *MiniappAuthService) ListUserBindings(_ context.Context, _ *authenticationV1.ListMiniappBindingsRequest) (*authenticationV1.ListMiniappBindingsResponse, error) {
-	return nil, errMiniappNotImplemented()
+// bindingTarget 管理端两个绑定接口的目标用户：按操作人的数据范围取，范围外返回 404。
+func (s *MiniappAuthService) bindingTarget(ctx context.Context, userID uint32) (*identityV1.User, error) {
+	if userID == 0 {
+		return nil, adminV1.ErrorBadRequest("user id is required")
+	}
+	return s.userRepo.Get(data.WithDataScope(ctx), &identityV1.GetUserRequest{QueryBy: &identityV1.GetUserRequest_Id{Id: userID}})
 }
 
-// DeleteUserBinding 解除用户的微信小程序绑定。
-func (s *MiniappAuthService) DeleteUserBinding(_ context.Context, _ *authenticationV1.DeleteMiniappBindingRequest) (*emptypb.Empty, error) {
-	return nil, errMiniappNotImplemented()
+// ListUserBindings 查询用户的微信小程序绑定。openid 只返回打码后的样子（前 6 后 4）。
+func (s *MiniappAuthService) ListUserBindings(ctx context.Context, req *authenticationV1.ListMiniappBindingsRequest) (*authenticationV1.ListMiniappBindingsResponse, error) {
+	if _, err := auth.FromContext(ctx); err != nil {
+		return nil, err
+	}
+	target, err := s.bindingTarget(ctx, req.GetUserId())
+	if err != nil {
+		return nil, err
+	}
+
+	bindings, err := s.userCredentialRepo.ListMiniappBindings(ctx, target.GetId())
+	if err != nil {
+		return nil, adminV1.ErrorInternalServerError("list miniapp bindings failed")
+	}
+	items := make([]*authenticationV1.MiniappBinding, 0, len(bindings))
+	for _, b := range bindings {
+		item := &authenticationV1.MiniappBinding{Id: b.ID, OpenidMasked: maskOpenID(b.OpenID)}
+		if b.CreatedAt != nil {
+			item.CreatedAt = timestamppb.New(*b.CreatedAt)
+		}
+		items = append(items, item)
+	}
+	return &authenticationV1.ListMiniappBindingsResponse{Items: items}, nil
+}
+
+// DeleteUserBinding 解除用户的微信小程序绑定：该用户的小程序会话全部失效，
+// 被解绑的微信要重新登录，其他已绑定的微信会自动重新登录。
+// 解绑是幂等的：绑定已经不存在（或者这个 ID 是别的用户的）时没有任何绑定被删，
+// 仍然返回成功，并照常吊销该用户的 app 令牌。
+//
+// 解绑不能阻止一个手机号仍然匹配的用户重新点一键登录；要彻底切断，停用账号或改掉手机号。
+func (s *MiniappAuthService) DeleteUserBinding(ctx context.Context, req *authenticationV1.DeleteMiniappBindingRequest) (*emptypb.Empty, error) {
+	operator, err := auth.FromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	target, err := s.bindingTarget(ctx, req.GetUserId())
+	if err != nil {
+		return nil, err
+	}
+
+	// 权限上限：不能动权限比自己高的账号的登录凭证。
+	roleIDs, err := s.userRepo.ListRoleIDsByUserID(ctx, target.GetId())
+	if err != nil {
+		s.log.Errorf(ctx, "list roles of user [%d] failed: %v", target.GetId(), err)
+		return nil, adminV1.ErrorInternalServerError("query user roles failed")
+	}
+	if err = ensureTargetWithinOperator(ctx, s.roleRepo, s.userRepo.ListRoleIDsByUserID, operator, target.GetId(), roleIDs); err != nil {
+		s.log.Errorf(ctx, "operator [%d] unbind miniapp of user [%d] rejected: %v", operator.GetUserId(), target.GetId(), err)
+		return nil, err
+	}
+
+	if err = s.revoker.RevokeBinding(ctx, target.GetId(), req.GetId()); err != nil {
+		return nil, err
+	}
+	s.log.Infof(ctx, "operator [%d] removed miniapp binding [%d] of user [%d]", operator.GetUserId(), req.GetId(), target.GetId())
+	return &emptypb.Empty{}, nil
 }

@@ -40,10 +40,12 @@ import (
 // 没被单独授权这些接口的角色登录后连菜单都拉不出来。
 // 新增条目前先确认该操作在服务端按当前用户收窄，否则会变成越权入口。
 var selfServiceOperations = map[string]struct{}{
-	adminV1.OperationAdminPortalServiceGetNavigation:           {},
-	adminV1.OperationAdminPortalServiceGetMyPermissionCode:     {},
-	adminV1.OperationAdminPortalServiceGetInitialContext:       {},
-	adminV1.OperationAuthenticationServiceLogout:               {},
+	adminV1.OperationAdminPortalServiceGetNavigation:       {},
+	adminV1.OperationAdminPortalServiceGetMyPermissionCode: {},
+	adminV1.OperationAdminPortalServiceGetInitialContext:   {},
+	adminV1.OperationAuthenticationServiceLogout:           {},
+	// 小程序退出：只下线令牌自己的会话，服务端按令牌里的用户和 JTI 定位。
+	adminV1.OperationMiniappAuthServiceLogout:                  {},
 	adminV1.OperationUserProfileServiceGetUser:                 {},
 	adminV1.OperationUserProfileServiceUpdateUser:              {},
 	adminV1.OperationUserProfileServiceChangePassword:          {},

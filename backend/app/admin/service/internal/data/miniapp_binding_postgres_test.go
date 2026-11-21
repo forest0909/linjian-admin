@@ -57,6 +57,50 @@ func runConcurrently(fns ...func()) {
 	wg.Wait()
 }
 
+// 绑定事务和凭证变更事务对同一个用户串行（真实 PostgreSQL）：两个事务都先锁用户行。
+// 一键登录的绑定和短信改号同时发生时，不管谁先拿到锁，最后都没有绑定留下：
+// 绑定先提交，随后被改号的事务删掉；改号先提交，绑定事务重新确认时发现号码已变，不写。
+func TestBindMiniapp_SerialWithMobileChangeOnPostgres(t *testing.T) {
+	entClient, ctx := openPostgresForTest(t)
+	client := entClient.Client()
+	creds := NewUserCredentialRepoForTest(entClient, password.NewBCryptCrypto(), nil)
+
+	const rounds = 30
+	var bindWon, changeWon int
+	for round := 0; round < rounds; round++ {
+		oldMobile := fmt.Sprintf("135%08d", round*2)
+		newMobile := fmt.Sprintf("135%08d", round*2+1)
+		uid := client.User.Create().SetUsername(fmt.Sprintf("serial-%d-%d", os.Getpid(), round)).SetMobile(oldMobile).SaveX(ctx).ID
+		t.Cleanup(func() {
+			client.UserCredential.Delete().Where(usercredential.UserIDEQ(uid)).ExecX(ctx)
+			client.User.Delete().Where(user.IDEQ(uid)).ExecX(ctx)
+		})
+		openid := fmt.Sprintf("openid-serial-%d-%d", os.Getpid(), round)
+
+		var bindErr, changeErr error
+		runConcurrently(
+			func() { _, bindErr = creds.BindMiniapp(ctx, uid, openid, MiniappBindCheck{Mobile: &oldMobile}) },
+			func() { _, changeErr = creds.BindVerifiedPhone(ctx, uid, newMobile) },
+		)
+		require.NoError(t, changeErr, "第 %d 轮", round)
+		switch {
+		case bindErr == nil:
+			bindWon++
+		case errors.Is(bindErr, ErrMiniappBindStale):
+			changeWon++
+		default:
+			t.Fatalf("第 %d 轮：绑定返回了意外的错误 %v", round, bindErr)
+		}
+
+		remaining := client.UserCredential.Query().
+			Where(usercredential.UserIDEQ(uid), usercredential.ProviderEQ(MiniappProvider)).
+			CountX(ctx)
+		require.Zero(t, remaining, "第 %d 轮：改号之后不能有绑定留下（bindErr=%v）", round, bindErr)
+		require.Equal(t, newMobile, *client.User.GetX(ctx, uid).Mobile, "第 %d 轮", round)
+	}
+	t.Logf("绑定先拿到锁 %d 轮，改号先拿到锁 %d 轮", bindWon, changeWon)
+}
+
 // 并发首次绑定（真实 PostgreSQL）：
 //   - 不同用户抢同一个 openid：一个成功，另一个得到 ErrMiniappBoundToOther，库里只有一行；
 //   - 同一个用户的两个请求：都成功，返回同一行。

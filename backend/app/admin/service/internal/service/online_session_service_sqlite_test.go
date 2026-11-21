@@ -54,6 +54,7 @@ func newOnlineSessionServiceForTest(t *testing.T) (*OnlineSessionService, *data.
 	return &OnlineSessionService{
 		log:           bLogger.NewHelper(bLogger.NopLogger()),
 		authenticator: authenticator,
+		revoker:       &BindingRevoker{log: bLogger.NewHelper(bLogger.NopLogger()), authenticator: authenticator},
 	}, tokenCache
 }
 

@@ -197,6 +197,60 @@ func (r *UserCredentialRepo) resolveBindingAfterConflict(ctx context.Context, us
 	return binding.ID, nil
 }
 
+// ListMiniappBindings 列出用户的微信绑定，按绑定时间先后。调用方负责先确认操作人看得到这个用户。
+func (r *UserCredentialRepo) ListMiniappBindings(ctx context.Context, userID uint32) ([]*MiniappBinding, error) {
+	entities, err := r.entClient.Client().UserCredential.Query().
+		Where(
+			usercredential.TenantIDEQ(0),
+			usercredential.UserIDEQ(userID),
+			usercredential.IdentityTypeEQ(usercredential.IdentityTypeSocialOauth),
+			usercredential.ProviderEQ(MiniappProvider),
+		).
+		Order(ent.Asc(usercredential.FieldID)).
+		All(viewer.WithSystemContext(ctx))
+	if err != nil {
+		r.log.Errorf(ctx, "list miniapp bindings of user [%d] failed: %s", userID, err.Error())
+		return nil, err
+	}
+	bindings := make([]*MiniappBinding, 0, len(entities))
+	for _, e := range entities {
+		bindings = append(bindings, toMiniappBinding(e))
+	}
+	return bindings, nil
+}
+
+// DeleteMiniappBinding 删除一条绑定。条件同时限定用户、绑定 ID、provider 和租户：
+// 拿别的用户的绑定 ID 来删，影响 0 行，没有任何绑定被删。删除 0 行也算成功（幂等）。
+func (r *UserCredentialRepo) DeleteMiniappBinding(ctx context.Context, userID, bindingID uint32) error {
+	_, err := r.entClient.Client().UserCredential.Delete().
+		Where(
+			usercredential.IDEQ(bindingID),
+			usercredential.UserIDEQ(userID),
+			usercredential.TenantIDEQ(0),
+			usercredential.ProviderEQ(MiniappProvider),
+		).
+		Exec(viewer.WithSystemContext(ctx))
+	if err != nil {
+		r.log.Errorf(ctx, "delete miniapp binding [%d] of user [%d] failed: %s", bindingID, userID, err.Error())
+		return err
+	}
+	return nil
+}
+
+// deleteMiniappBindingsInTx 在凭证变更的事务里删掉该用户的全部微信绑定。调用前要先锁住用户行。
+// 改密、重置密码、改手机号、清手机号都调它：旧凭证建立的绑定不能再用来续期。
+// 和凭证变更同一个事务：要么都生效，要么都不生效。
+func deleteMiniappBindingsInTx(ctx context.Context, tx *ent.Tx, userID uint32) error {
+	_, err := tx.UserCredential.Delete().
+		Where(
+			usercredential.UserIDEQ(userID),
+			usercredential.TenantIDEQ(0),
+			usercredential.ProviderEQ(MiniappProvider),
+		).
+		Exec(viewer.WithSystemContext(ctx))
+	return err
+}
+
 // passwordSnapshotInTx 在事务里读用户的密码凭证值。调用前要先锁住用户行。
 func passwordSnapshotInTx(ctx context.Context, tx *ent.Tx, userID uint32) (string, error) {
 	entity, err := tx.UserCredential.Query().

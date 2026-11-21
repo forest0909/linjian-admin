@@ -34,6 +34,7 @@ import (
 	"go-wind-admin/app/admin/service/internal/data/enttest"
 
 	"go-wind-admin/pkg/constants"
+	"go-wind-admin/pkg/middleware/auth"
 	"go-wind-admin/pkg/wechat"
 	"go-wind-admin/pkg/wechat/wechattest"
 )
@@ -141,6 +142,13 @@ type miniappEnv struct {
 	mini    *MiniappAuthService
 	users   *UserService
 	profile *UserProfileService
+	online  *OnlineSessionService
+	revoker *BindingRevoker
+	sender  *fakeContactSender // 短信出口的替身：记下发出去的验证码
+
+	// revoked 全量吊销钩子收到的客户端类型，按发生顺序。
+	revokedMu sync.Mutex
+	revoked   []authenticationV1.ClientType
 
 	seed *authSvcEnv // 复用 seedBackendAccessPermission / seedRole
 	// roleID 带「访问后台」权限点的普通角色；seedUser 默认挂它。
@@ -203,6 +211,7 @@ func newMiniappEnv(t *testing.T) *miniappEnv {
 		miniapp:                 runtime,
 	}
 	sys := enttest.NewSystemContext(context.Background())
+	sender := &fakeContactSender{smsConfigured: true}
 
 	e := &miniappEnv{
 		t: t, sys: sys, entClient: entClient, client: entClient.Client(), mr: mr, fault: fault, logs: logs,
@@ -216,12 +225,21 @@ func newMiniappEnv(t *testing.T) *miniappEnv {
 		},
 		profile: &UserProfileService{
 			log: logger, userRepo: userRepo, roleRepo: roleRepo, userCredentialRepo: credRepo,
-			authenticator: authenticator, outbound: &fakeContactSender{smsConfigured: true},
+			authenticator: authenticator, outbound: sender,
 			vcodeCache: data.NewVCodeCacheForTest(rdb),
 		},
-		seed: &authSvcEnv{svc: authn, entClient: entClient, mr: mr, captchaClient: captchaClient, ctx: sys},
+		sender: sender,
+		seed:   &authSvcEnv{svc: authn, entClient: entClient, mr: mr, captchaClient: captchaClient, ctx: sys},
 	}
+	e.revoker = &BindingRevoker{log: logger, userCredentialRepo: credRepo, authenticator: authenticator}
+	e.online = &OnlineSessionService{log: logger, authenticator: authenticator, revoker: e.revoker}
 	e.mini = newMiniappAuthServiceForTest(e, logger, runtime)
+	// 记下每次全量吊销的客户端类型：只吊销 app 令牌时管理端的 SSE 连接不该被断开（钩子按类型断流）。
+	authenticator.OnUserTokensRevoked(func(_ context.Context, ct authenticationV1.ClientType, _ uint32) {
+		e.revokedMu.Lock()
+		defer e.revokedMu.Unlock()
+		e.revoked = append(e.revoked, ct)
+	})
 
 	// 数据库故障注入：打开开关后，写微信绑定行失败。事务客户端和普通客户端共用这组钩子。
 	e.client.UserCredential.Use(func(next ent.Mutator) ent.Mutator {
@@ -363,6 +381,32 @@ func (e *miniappEnv) requireLogsClean(secrets ...string) {
 	for _, secret := range append(secrets, "SECRETCODE", wechattest.AppSecret, wechattest.AccessToken, e.wx.URL) {
 		require.NotContains(e.t, text, secret, "服务日志里不应出现 %q", secret)
 	}
+}
+
+// revokedTypes 取走到目前为止全量吊销钩子收到的客户端类型。
+func (e *miniappEnv) revokedTypes() []authenticationV1.ClientType {
+	e.revokedMu.Lock()
+	defer e.revokedMu.Unlock()
+	out := e.revoked
+	e.revoked = nil
+	return out
+}
+
+// adminToken 给用户签一个管理端会话，返回 access token。
+func (e *miniappEnv) adminToken(userID uint32) string {
+	e.t.Helper()
+	at, _, err := e.authenticator.CreateUserToken(context.Background(), authenticationV1.ClientType_admin,
+		&authenticationV1.UserTokenPayload{UserId: userID})
+	require.NoError(e.t, err)
+	return at
+}
+
+// operatorOf 用令牌自己的载荷组出请求上下文（相当于过了鉴权中间件），底下是系统视图。
+func (e *miniappEnv) operatorOf(token string) context.Context {
+	e.t.Helper()
+	payload := e.payload(token)
+	require.NotNil(e.t, payload, "令牌应该有效")
+	return auth.NewContext(e.sys, payload)
 }
 
 // defaultPassword 种子用户的明文密码。

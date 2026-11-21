@@ -628,6 +628,26 @@ func (r *UserCredentialRepo) ChangeCredential(ctx context.Context, userID uint32
 		req.NewCredential = string(newPlain)
 	}
 
+	// 改密和删微信绑定在同一个事务里，先锁用户行：和小程序的绑定事务对同一个用户串行。
+	// 绑定事务要么在改密之前提交（随后在这里被删掉），要么在之后开始（重新确认时发现密码已变，不写）。
+	tx, err := r.entClient.Client().Tx(ctx)
+	if err != nil {
+		r.log.Errorf(ctx, "start transaction failed: %s", err.Error())
+		return authenticationV1.ErrorInternalServerError("start transaction failed")
+	}
+	var txCommitted bool
+	defer finishEntTx(tx, &txCommitted, func(rollbackErr error) {
+		r.log.Errorf(ctx, "transaction rollback failed: %s", rollbackErr.Error())
+	})
+	client := tx.Client()
+
+	// 用户行不存在（只剩凭证行的遗留数据）时没有行可锁，也不会有绑定事务和它竞争
+	// （绑定事务锁不到用户行就不写），照原来的行为继续改密。
+	if _, err = lockUserRow(viewer.WithSystemContext(ctx), tx, r.entClient.Driver().Dialect(), userID); err != nil && !ent.IsNotFound(err) {
+		r.log.Errorf(ctx, "lock user [%d] failed: %s", userID, err.Error())
+		return authenticationV1.ErrorInternalServerError("query user failed")
+	}
+
 	// 按 user_id 定位，并且只认租户 0：旧库遗留的同名 tenant_id>0 凭证不参与匹配，也不会被一并改掉。
 	tenantWhere := []predicate.UserCredential{
 		usercredential.UserIDEQ(userID),
@@ -636,7 +656,7 @@ func (r *UserCredentialRepo) ChangeCredential(ctx context.Context, userID uint32
 		usercredential.TenantIDEQ(0),
 	}
 
-	entity, err := r.entClient.Client().UserCredential.
+	entity, err := client.UserCredential.
 		Query().
 		Select(
 			usercredential.FieldCredentialType,
@@ -682,7 +702,7 @@ func (r *UserCredentialRepo) ChangeCredential(ctx context.Context, userID uint32
 	extraInfo := appendPasswordHistory(entity.ExtraInfo, *entity.Credential,
 		r.configRepo.GetConfigInt(ctx, constants.ConfigKeyPasswordHistoryCount, constants.DefaultPasswordHistoryCount))
 
-	builder := r.entClient.Client().UserCredential.Update()
+	builder := client.UserCredential.Update()
 	builder.Where(tenantWhere...)
 	builder.
 		SetCredential(newCredential).
@@ -691,6 +711,15 @@ func (r *UserCredentialRepo) ChangeCredential(ctx context.Context, userID uint32
 	if err = builder.Exec(ctx); err != nil {
 		r.log.Errorf(ctx, "update one data failed: %s", err.Error())
 		return authenticationV1.ErrorInternalServerError("update data failed")
+	}
+
+	if err = deleteMiniappBindingsInTx(ctx, tx, userID); err != nil {
+		r.log.Errorf(ctx, "delete miniapp bindings of user [%d] failed: %s", userID, err.Error())
+		return authenticationV1.ErrorInternalServerError("delete miniapp bindings failed")
+	}
+	if commitErr := commitEntTx(tx, &txCommitted); commitErr != nil {
+		r.log.Errorf(ctx, "transaction commit failed: %s", commitErr.Error())
+		return authenticationV1.ErrorInternalServerError("transaction commit failed")
 	}
 
 	return nil

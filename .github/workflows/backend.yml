@@ -65,3 +65,4 @@ jobs:
           if grep -- '--- SKIP' test.log; then echo "postgres tests were skipped"; exit 1; fi
           grep -q -- '--- PASS: TestClaimMobile_ConcurrentUsersOnPostgres' test.log
           grep -q -- '--- PASS: TestBindMiniapp_ConcurrentOnPostgres' test.log
+          grep -q -- '--- PASS: TestBindMiniapp_SerialWithMobileChangeOnPostgres' test.log

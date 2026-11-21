@@ -12,6 +12,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	adminV1 "go-wind-admin/api/gen/go/admin/service/v1"
+	authenticationV1 "go-wind-admin/api/gen/go/authentication/service/v1"
 	onlineSessionV1 "go-wind-admin/api/gen/go/online_session/service/v1"
 
 	"go-wind-admin/pkg/middleware/auth"
@@ -27,15 +28,19 @@ type OnlineSessionService struct {
 
 	log           *bLogger.Helper
 	authenticator *data.Authenticator
+	// revoker 小程序会话的下线函数（删绑定再吊销 app 令牌）。
+	revoker *BindingRevoker
 }
 
 func NewOnlineSessionService(
 	ctx *bootstrap.Context,
 	authenticator *data.Authenticator,
+	revoker *BindingRevoker,
 ) *OnlineSessionService {
 	return &OnlineSessionService{
 		log:           ctx.NewLoggerHelper("online-session/service/admin-service"),
 		authenticator: authenticator,
+		revoker:       revoker,
 	}
 }
 
@@ -179,13 +184,23 @@ func (s *OnlineSessionService) RevokeMyOnlineSession(ctx context.Context, req *o
 		return nil, adminV1.ErrorNotFound("session not found or already offline")
 	}
 
-	if err = s.authenticator.RevokeTokenByJti(ctx, trans.Ptr(req.GetClientType()), operator.GetUserId(), jti); err != nil {
+	if err = s.revokeSession(ctx, req.GetClientType(), operator.GetUserId(), jti); err != nil {
 		s.log.Errorf(ctx, "revoke my session failed for user [%d] jti [%s]: %v", operator.GetUserId(), jti, err)
 		return nil, err
 	}
 
 	s.log.Infof(ctx, "user [%d] revoked own session [%s]", operator.GetUserId(), jti)
 	return &onlineSessionV1.RevokeMyOnlineSessionResponse{}, nil
+}
+
+// revokeSession 下线一个会话。admin 会话保持原有行为：按 JTI 吊销它和它的整条代际世系。
+// app（小程序）会话走统一的下线函数：删掉这个会话所用的微信绑定，再吊销该用户的全部 app 令牌，
+// 否则被踢的微信下一次请求就静默续期回来了。没有绑定的 app 会话（H5）只按 JTI 吊销。
+func (s *OnlineSessionService) revokeSession(ctx context.Context, clientType authenticationV1.ClientType, userID uint32, jti string) error {
+	if clientType == authenticationV1.ClientType_app {
+		return s.revoker.RevokeAppSession(ctx, userID, jti)
+	}
+	return s.authenticator.RevokeTokenByJti(ctx, trans.Ptr(clientType), userID, jti)
 }
 
 // ForceLogoutSession 强制下线指定会话：吊销其访问令牌、刷新令牌与会话元数据。
@@ -196,7 +211,7 @@ func (s *OnlineSessionService) ForceLogoutSession(ctx context.Context, req *onli
 		return nil, adminV1.ErrorBadRequest("user id and jti are required")
 	}
 
-	if err := s.authenticator.RevokeTokenByJti(ctx, trans.Ptr(req.GetClientType()), userId, jti); err != nil {
+	if err := s.revokeSession(ctx, req.GetClientType(), userId, jti); err != nil {
 		s.log.Errorf(ctx, "force logout session failed for user [%d] jti [%s]: %v", userId, jti, err)
 		return nil, err
 	}
