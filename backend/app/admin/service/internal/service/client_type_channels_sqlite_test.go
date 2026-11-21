@@ -264,3 +264,17 @@ func TestLegacyAdminSession_AccessRefreshRotate(t *testing.T) {
 	_, err = callThroughAuthMiddleware(e, rot2.GetAccessToken())
 	require.Error(t, err)
 }
+
+// 令牌存储（Redis）读不出来时中间件返回 503，不是 TOKEN_EXPIRED：小程序不该把它当成续期信号。
+func TestAuthMiddleware_TokenStoreFailureIs503(t *testing.T) {
+	e := newAuthenticationServiceForTest(t)
+	appAT, _ := e.issue(t, authenticationV1.ClientType_app, authSvcTestUserID)
+	_, err := callThroughAuthMiddleware(e, appAT)
+	require.NoError(t, err)
+
+	e.mr.Close()
+	_, err = callThroughAuthMiddleware(e, appAT)
+	se := kratosErrors.FromError(err)
+	require.Equal(t, int32(503), se.Code)
+	require.NotEqual(t, "TOKEN_EXPIRED", se.Reason)
+}

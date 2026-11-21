@@ -59,3 +59,19 @@ func (tc *TokenChecker) IsBlockedAccessToken(ctx context.Context, accessToken st
 	}
 	return !resp.IsValid
 }
+
+// VerifyAccessToken 同 IsValidAccessToken，但把失败原因带出来：
+// 令牌存储故障返回 503 错误，令牌本身无效返回 401 错误。鉴权中间件优先用它。
+func (tc *TokenChecker) VerifyAccessToken(ctx context.Context, accessToken string) (*authenticationV1.UserTokenPayload, error) {
+	resp, err := tc.authenticator.Authenticate(ctx, &authenticationV1.ValidateTokenRequest{
+		Token:         accessToken,
+		TokenCategory: authenticationV1.TokenCategory_ACCESS,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.GetIsValid() {
+		return nil, authenticationV1.ErrorUnauthorized("invalid access token")
+	}
+	return resp.GetPayload(), nil
+}

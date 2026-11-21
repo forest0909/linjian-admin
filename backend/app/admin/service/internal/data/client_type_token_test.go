@@ -223,8 +223,37 @@ func TestRevokeTokenByJti_ReportsEveryStepError(t *testing.T) {
 	t.Run("回溯代际链失败", func(t *testing.T) {
 		a, cache := newRaceAuthenticator(t)
 		_, _, jti := raceLogin(t, a)
-		cache.rdb.AddHook(&failCommands{match: func(name, _ string) bool { return name == "getdel" }})
+		cache.rdb.AddHook(&failCommands{match: func(name, key string) bool { return name == "get" && strings.HasPrefix(key, "lin:") }})
 		require.ErrorIs(t, cache.RevokeTokenByJti(ctx, admin, raceTestUID, jti), errInjectedRedis)
+	})
+
+	// 祖先代的 AT 删除失败：返回错误，重试入口（代际链、会话元数据）留着；重试后旧令牌失效。
+	t.Run("中途失败后重试能删掉祖先代的令牌", func(t *testing.T) {
+		a, cache := newRaceAuthenticator(t)
+		oldAT, _, oldJti := raceLogin(t, a)
+		newAT, _, newJti := raceLogin(t, a)
+		require.NoError(t, a.AddTokenLineage(ctx, admin, raceTestUID, newJti, oldJti))
+		require.NoError(t, cache.SaveSessionMeta(ctx, admin, raceTestUID, newJti, &SessionMeta{LoginAt: 1}, time.Hour))
+
+		fail := true
+		cache.rdb.AddHook(&failCommands{match: func(name, key string) bool {
+			return fail && name == "del" && strings.HasSuffix(key, ":"+oldJti) && strings.HasPrefix(key, "at:")
+		}})
+		require.ErrorIs(t, cache.RevokeTokenByJti(ctx, admin, raceTestUID, newJti), errInjectedRedis)
+		require.False(t, accessValid(t, a, newAT), "当前代的令牌已删")
+		require.True(t, accessValid(t, a, oldAT), "祖先代的令牌没删掉")
+		meta, err := cache.GetSessionMeta(ctx, admin, raceTestUID, newJti)
+		require.NoError(t, err)
+		require.NotNil(t, meta, "失败时会话元数据留着，自助踢会话还能找到它重试")
+
+		fail = false
+		require.NoError(t, cache.RevokeTokenByJti(ctx, admin, raceTestUID, newJti))
+		require.False(t, accessValid(t, a, oldAT), "重试后祖先代的令牌失效")
+		meta, err = cache.GetSessionMeta(ctx, admin, raceTestUID, newJti)
+		require.NoError(t, err)
+		require.Nil(t, meta)
+		// 链节点也清了。
+		require.False(t, cache.exists(ctx, cache.makeTokenLineageKey(admin, raceTestUID, newJti)))
 	})
 
 	t.Run("没有代际链也算成功", func(t *testing.T) {
@@ -232,4 +261,14 @@ func TestRevokeTokenByJti_ReportsEveryStepError(t *testing.T) {
 		_, _, jti := raceLogin(t, a)
 		require.NoError(t, cache.RevokeTokenByJti(ctx, admin, raceTestUID, jti))
 	})
+}
+
+// Redis 读不出来不是令牌失效：返回 503，不是 401。
+func TestAuthenticate_TokenStoreFailureIsNotUnauthorized(t *testing.T) {
+	a, cache := newRaceAuthenticator(t)
+	at, _, _ := raceLogin(t, a)
+	cache.rdb.AddHook(&failCommands{match: func(name, key string) bool { return name == "get" && strings.HasPrefix(key, "at:") }})
+	resp, err := authenticateAccess(a, at, authenticationV1.ClientType_admin)
+	require.True(t, authenticationV1.IsServiceUnavailable(err), "got %v", err)
+	require.False(t, resp.GetIsValid())
 }

@@ -376,9 +376,10 @@ func (a *Authenticator) Authenticate(ctx context.Context, req *authenticationV1.
 		if !req.GetSkipRedis() {
 			var valid bool
 			if valid, err = a.userTokenCache.IsValidAccessToken(ctx, tokenClientType, payload.GetUserId(), payload.GetJti(), req.GetToken()); err != nil {
+				// 令牌存储读不出来：503，不是 401。客户端不该把它当成令牌失效去续期或重新登录。
 				return &authenticationV1.ValidateTokenResponse{
 					IsValid: false,
-				}, authenticationV1.ErrorUnauthorized("invalid access token: [%v]", err)
+				}, authenticationV1.ErrorServiceUnavailable("token store unavailable")
 			}
 			if !valid {
 				return &authenticationV1.ValidateTokenResponse{

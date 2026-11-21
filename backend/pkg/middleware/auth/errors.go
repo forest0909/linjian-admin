@@ -23,5 +23,9 @@ var (
 	// 不把 tid 改写成 0：那会把旧租户身份变成平台视图。
 	ErrLegacyTenantToken = errors.Unauthorized(reason, "token of a removed tenant is no longer accepted")
 
+	// ErrTokenStoreUnavailable 令牌存储（Redis）读不出来。503，不是 401：
+	// 客户端不该把它当成令牌失效去续期或重新登录。
+	ErrTokenStoreUnavailable = errors.ServiceUnavailable("SERVICE_UNAVAILABLE", "token store unavailable")
+
 	ErrAccessTokenCheckerNotConfigured = errors.Unauthorized(reason, "access token checker is not configured")
 )
