@@ -1,8 +1,8 @@
 # AGENTS.md — 林间 Admin（linjian-admin）开发指南（AI Agent 入口）
 
-> 本仓库是单租户管理端：Go 后端 + React 前端（`frontend/admin/react`）。没有第二套前端，没有 AI 模块。租户、套餐、配额已删除；底层 `tenant_id` 列和 ent 租户隐私规则保留，值固定为 0，新模块不需要做租户处理（见 `docs/tenant_isolation.md`）。
+> 本仓库是单租户管理端：Go 后端 + React 前端（`frontend/admin/react`）。管理端前端只有 React；另有微信小程序脚手架在 `frontend/miniapp`（Taro，规范见 `frontend/miniapp/AGENTS.md`，接入文档见 `docs/miniapp.md`）。没有 AI 模块。租户、套餐、配额已删除；底层 `tenant_id` 列和 ent 租户隐私规则保留，值固定为 0，新模块不需要做租户处理（见 `docs/tenant_isolation.md`）。
 
-本文件是仓库入口：布局、门禁、铁律。前端规范见 `frontend/admin/react/AGENTS.md`。
+本文件是仓库入口：布局、门禁、铁律。管理端前端规范见 `frontend/admin/react/AGENTS.md`，小程序规范见 `frontend/miniapp/AGENTS.md`。
 
 ## 仓库布局
 
@@ -11,6 +11,7 @@ backend/                    Go + Kratos + Ent（DI 手写装配 wiring_*.go，�
   third_party/              收编进来的依赖源码。来源和版本见各目录 VERSION.md，许可证见仓库根 THIRD_PARTY_LICENSES
   api/protos/               业务 proto，以及收进来的 pagination、redact、conf
 frontend/admin/react/       React 19 + antd 6 + ProComponents + TanStack Query + zustand（dev 端口 15888）
+frontend/miniapp/           微信小程序脚手架：Taro 4 + React 18 + NutUI，命令行编译微信小程序和 H5（与管理端共用同一个后端）
 docs/                       文档（总入口 docs/README.md）
 ```
 
@@ -25,6 +26,8 @@ docs/                       文档（总入口 docs/README.md）
 | 前端 | `npm run typecheck`、`npm run build`、`npm run lint` | `frontend/admin/react` |
 | 上游依赖回流 | `bash scripts/check-no-upstream-deps.sh` | 仓库根 |
 | 错误 reason 译文 | `node scripts/check-error-reason-i18n.mjs` | 仓库根 |
+| mock 构建能编译 | `go build -tags miniapp_mock ./...` | `backend/` |
+| 小程序 | `npm run typecheck`、`npm run lint`、`npm test`、`npm run build:mp-weixin`、`npm run build:h5` | `frontend/miniapp` |
 
 **门禁出现任何新报错，一律当作自己引入的 bug 修复。**
 
@@ -34,9 +37,9 @@ docs/                       文档（总入口 docs/README.md）
 2. **搜索条件一律 contains 而非 EQ**、ID 类字段不进模糊搜索；CRUD 请求体必须包 `{ data: {...} }`，但**仅限 CRUD**——`body: "*"` 的自定义 RPC（如 `internal-message/send`）收的是扁平请求体，多包一层 `data` 会被 protojson 当未知字段丢掉，接口照样 200、字段全为空。细节见 `docs/crud_module_guide/`。
 3. **`backend/third_party/` 是本仓代码**，可以直接改。改了要在对应 `VERSION.md` 里记一笔。不要再 `go get` 回 `github.com/tx7do`。
 
-## 只维护 React
+## 管理端只维护 React
 
-新功能只做 React。CRUD 手册在 `docs/crud_module_guide/`（`backend.md` 和 `react.md`）。
+管理端新功能只做 React。CRUD 手册在 `docs/crud_module_guide/`（`backend.md` 和 `react.md`）。微信小程序是独立的脚手架，开发规范见 `frontend/miniapp/AGENTS.md`；它和管理端共用后端账号体系和 RBAC，不复制一套业务。
 
 **代码生成**：在 `backend/` 下用 Makefile。产物仍须按本仓铁律验收（`{ data: {...} }` 包裹、contains 搜索、新端点要先 `make openapi` 再重启——启动时会自动同步 Api 表和权限点，`make ts` 生成 React 客户端）。
 
@@ -79,6 +82,7 @@ docs/                       文档（总入口 docs/README.md）
 - **新增 CRUD 模块**：`docs/crud_module_guide/`（`backend.md`、`react.md`）
 - **接客户已有数据库（外部数据源，PG/MySQL/SQL Server，不走 ent）**：`docs/crud_module_guide/external.md`
 - 认证与令牌链路：`docs/authentication.md`
+- **微信小程序**：`docs/miniapp.md`（登录流程、配置、本地开发、验收清单、下线和解绑的语义）；小程序前端规范 `frontend/miniapp/AGENTS.md`
 - `tenant_id` 遗留列与旧库升级清理：`docs/tenant_isolation.md`
 - 任务调度：`docs/task_system.md`
 - SSE：`docs/sse_architecture.md`

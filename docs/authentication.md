@@ -96,6 +96,7 @@ USER_NOT_FOUND / USER_FREEZE / INVALID_PASSWORD 归并为同文案。
 | `ouid` | org_unit_id | 当前组织单元 |
 | `hfs` | hidden_fields | 字段黑名单（"资源.字段"）。平台管理员（`is_platform_admin`）不写入，其余用户按角色聚合。语义见 frontend_authority 字段级一节 |
 | `jti` | jti | 令牌对唯一标识（吊销/轮换/会话元数据键） |
+| `ct` | client_type | 签发时写入的客户端类型（admin / app）。缺省视为 admin |
 
 ### 3.2 配置（`configs/auth.yaml`）与引擎
 
@@ -113,12 +114,9 @@ USER_NOT_FOUND / USER_FREEZE / INVALID_PASSWORD 归并为同文案。
   `GWA_AUTH_JWT_KEY` 优先于 yaml（yaml 内置开发示例密钥，`authenticator.go`
   `applyJwtKeyOverrides` 应用覆盖；只从 yaml 读到示例私钥时告警，经 `GWA_AUTH_JWT_PRIVATE_KEY`
   注入的就是示例私钥时拒绝启动）；轮换命令见 [backend_deploy.md](./backend_deploy.md)；
-- **引擎只装配了 admin 一套**（`Authenticator.AdminAuthenticator`，`authenticator.go:71` / 构造于 `:110`）。
-  `getAuthenticator`（`:662-673`）里 `case ClientType_app:` 是**空分支**：不报错、也不赋引擎，返回
-  `(nil, nil)`——而调用方一律只判 `err`（如 `:252-255`、`:486-492`），拿到 nil 引擎后直接调方法即
-  **运行期空指针**。装配侧 `NewClientType()` 恒返回 admin（`internal/data/data.go:21-23`），所以
-  只有**请求显式带 `client_type: app`** 才会走到这条路（登录入参的 client_type 由前端传值，刷新端点强制 admin）。
-  → **app 端未实现**：前端/配置不要传 app；要接 app 必须先补这个分支。
+- **引擎有 admin 和 app 两套**。`getAuthenticator` 按 `ClientType` 选引擎：admin 引擎签发 access + refresh；app 引擎只签发 access token（不签 refresh、不设 Cookie），有效期同样取 `access_token_expires`。刷新端点仍强制 admin。
+  - 令牌里写入 `ct` 声明（`client_type`）。`Authenticate` 验签后读 `ct`：**没有这个声明按 admin**（升级前签发的管理端令牌，在未过期、未吊销、租户为 0 且 Redis 记录还在的情况下继续可用）；值不是 admin 或 app 则拒绝。之后用这个类型拼 `at:{ct}:{uid}:{jti}` 查 Redis，比较完整 token 字符串。
+  - **`wechat.yaml` 的 `app_id` 为空时一切 app 签发都拒绝**，包括 `/admin/v1/login` 带 `client_type=app`。多实例部署要先让所有实例升级到能识别 `ct` 的版本，再填 `app_id`。
 
 ### 3.3 签发与吊销模型（`internal/data/authenticator.go`）
 
@@ -129,7 +127,10 @@ USER_NOT_FOUND / USER_FREEZE / INVALID_PASSWORD 归并为同文案。
   令牌不在缓存（已吊销/未入缓存）即拒。因此**吊销即时生效**（删缓存键），
   密钥轮换 + 吊销 = 全量下线；
 - 吊销面：`RevokeUserToken`（按 uid，登出用）、`RevokeTokenByJti`（单会话，在线用户强制下线用）、
-  `RevokeUserTokenAllClientTypes`（改密踢人等）。
+  `RevokeUserTokenAllClientTypes`（改密踢人等）。`RevokeToken` 和 `RevokeTokenByJti` 汇总各步的错误后返回，不再只返回最后一步的；
+- 吊销钩子带客户端类型：SSE 只在 admin 会话被全量吊销时断流，只吊销 app 令牌（改号、解绑、下线）不影响管理端已建立的 SSE 连接；
+- **共享和专用通道**：REST 中间件接受 admin 和 app 两类令牌；SSE 握手和审计导出在入口处要求 `ct` 为 admin，app 令牌返回 401；
+- 鉴权中间件校验令牌失败（缺失、无效、过期）的 401 reason 是 `TOKEN_EXPIRED`，和业务层的 401（`UNAUTHORIZED`）区分开，小程序据此触发静默续期。
 
 ## 4. 刷新链路（HttpOnly Cookie + 轮换）
 
@@ -219,7 +220,9 @@ SameSite=Lax 按站点判断——localhost 不同端口同站，dev 直连后�
 - ListOnlineSession（平台侧全量）/ ListMyOnlineSession（本人）；
   RevokeMyOnlineSession（自撤销单会话）；**ForceLogoutSession（平台侧强制下线单会话，
   `RevokeTokenByJti` 即时生效）**；
-- 密码修改 → 全 clientType 吊销（踢人）；
+- 密码修改 → 全 clientType 吊销（踢人），**同一事务里删除该用户全部微信绑定**；管理员重置密码（独立接口 `EditUserPassword` 和更新用户时附带密码两条路径）同样如此，并且在写入之前先做目标用户的权限上限检查；
+- 手机号变更（自助短信验证改号、管理员改号或清号）→ 同一事务里删除该用户全部微信绑定，提交后吊销该用户的 app 令牌。管理员改号的检查在仓储的更新事务里按实际要写入的值触发，并同样做权限上限检查；
+- app 会话的下线（退出、自助踢会话、强制下线、管理端解绑）统一走 `revokeBinding`：删除这次会话所用的绑定，再吊销该用户全部 app 令牌。详见第 13 章；
 - 用户角色集合发生变化 → 全 clientType 吊销。`UserService.Update` 在写入前用
   `ListRoleIDsByUserID` 和请求中的角色集合比较；无 field mask（全量更新）或 mask 含
   `role_ids` / `role_id`，且两边不一致时，更新成功后调用 `RevokeUserTokenAllClientTypes`。
@@ -252,6 +255,8 @@ SameSite=Lax 按站点判断——localhost 不同端口同站，dev 直连后�
 | Login | 全链闸门（第 2 章） |
 | GenerateCaptcha / VerifyCaptcha | 单次有效、无敏感返回 |
 | RefreshToken | refresh 自描述 JWT 独立鉴权 + 原子轮换 + 缓存吊销核对 |
+| MiniappAuthService.LoginByPhone | 请求额度（IP、AppID、openid 换号三维）+ 服务端兑换两个微信 code + AppID 水印校验 + 手机号精确匹配唯一用户 |
+| MiniappAuthService.SilentLogin | 请求额度 + 服务端兑换 `wx.login` code + 必须命中已有绑定 |
 
 白名单**跳过的是整个 `auth.Server` 中间件**（令牌校验、viewer 注入与接口鉴权都在里面），
 selector 的语义是"命中白名单 ⇒ 返回 false ⇒ 不执行该中间件"（`kratos-bootstrap/rpc v0.1.3` 的
@@ -285,6 +290,67 @@ selector 的语义是"命中白名单 ⇒ 返回 false ⇒ 不执行该中间件
 - OIDC 企业登录已移除，不再从环境变量或 `auth.yaml` 的 oidc 节恢复；
 - 注册入口（RegisterUser）已移除，不再恢复（孤儿用户教训）；
 - login 端点不做 refresh（专用端点）、不做 client_credentials（机器令牌交换已删除）；
+- 小程序不签发 refresh token；app 令牌过期后只能靠微信绑定静默续期（第 13 章）；
 - 找回密码（`/admin/v1/forgot-password`、`/admin/v1/reset-password-by-code`）已删除。个人中心换绑邮箱和手机仍读 `configs/mail.yaml` 同步发验证码；
 - MFA（TOTP）和登录策略已删除。图形验证码和登录限流保留；
 - access token 不落 localStorage/sessionStorage（仅内存，刷新即失，靠 refresh Cookie 恢复）。
+
+## 13. 微信小程序登录
+
+接入、配置、本地开发和验收见 [miniapp.md](./miniapp.md)。本章只记令牌和会话层的规则。
+
+### 13.1 接口
+
+| RPC | 方法和路径 | 鉴权 |
+|---|---|---|
+| `AuthenticationService.Login`（`client_type=app`，可带 `code`） | `POST /admin/v1/login` | 白名单 |
+| `MiniappAuthService.LoginByPhone` | `POST /admin/v1/miniapp/login/phone` | 白名单 |
+| `MiniappAuthService.SilentLogin` | `POST /admin/v1/miniapp/login/silent` | 白名单 |
+| `MiniappAuthService.Logout` | `POST /admin/v1/miniapp/logout` | 登录即可（`selfServiceOperations`），只接受 app 令牌 |
+| `MiniappAuthService.ListUserBindings` | `GET /admin/v1/users/{userId}/miniapp-bindings` | 登录 + casbin |
+| `MiniappAuthService.DeleteUserBinding` | `DELETE /admin/v1/users/{userId}/miniapp-bindings/{id}` | 登录 + casbin |
+
+两个微信登录接口是 `body: "*"` 的自定义 RPC，请求体是扁平 JSON。管理端 `Logout` 只接受 admin 令牌，小程序 `Logout` 只接受 app 令牌，互相调用返回 400。
+
+### 13.2 绑定
+
+- 绑定存在 `sys_user_credentials`，不改 ent schema：`identity_type=SOCIAL_OAUTH`、`provider=wechat_miniapp`、`provider_account_id=openid`、`status=ENABLED`、`tenant_id=0`，`credential` 字段不设置。不记 UnionID。
+- 「一个 openid 只对应一个用户」由现有唯一索引 `(tenant_id, provider, provider_account_id)` 保证；一个用户可以有多行。
+- 公开的两个登录接口没有登录身份，只做两种写死条件的查询：按已验证的手机号查用户（`tenant_id = 0 AND mobile = ?`）、按已验证的 openid 查绑定。
+
+### 13.3 令牌和会话
+
+- app 令牌只有 access token，有效期取 `access_token_expires`；会话元数据 TTL 同取 access 有效期。
+- `SessionMeta.BindingID` 记录这个会话所用的绑定行 ID（H5 登录和 `miniapp_bound=false` 的登录为 0）。access token 和会话元数据由同一个 Redis 脚本写入。
+- **签发时按撤销版本条件写入**：先读 `rv:{app}:{uid}` 记为 v，认证和绑定事务之后，条件脚本比较 v 再写入；版本变了就不写，返回 `CONFLICT`。
+- **撤销先提交数据库，再动 Redis**：`RevokeToken(app, uid)` 先推进 `rv`，再删除该用户全部 app 令牌和会话元数据。Redis 失败时接口返回 503，操作可重复执行。
+
+### 13.4 绑定事务
+
+- 绑定在数据库事务里生效：锁用户行 → 重新确认（用户启用；手机路径确认 `mobile` 没变，密码路径确认密码凭证没变）→ 查 openid 的绑定（属于别的用户就回滚返回冲突）→ 没有就插入 → 提交。
+- 改密、重置密码、改号、清号的事务同样先锁用户行，改凭证并删该用户全部微信绑定。两类事务串行，所以不会出现「凭证已变、绑定又被写进去」。
+- 没有补偿删除：签发失败时绑定保留（它是认证成立之后合法写入的，过时的会被凭证变更的事务删掉）。
+
+### 13.5 失败合同
+
+三条路径在超额、Redis 故障、微信超时、绑定冲突、会话写失败下的响应：
+
+| 情况 | 一键登录 | 账号密码加绑定 | 静默续期 |
+|---|---|---|---|
+| IP 或 AppID 总量超额 | 429，不调微信 | 登录继续，`miniapp_bound=false`，不调微信 | 429，不调微信 |
+| openid 换号超额 | 429（已调过 `jscode2session`，不取 access_token） | 不适用 | 不适用 |
+| 额度用的 Redis 故障 | 503 `MINIAPP_UNAVAILABLE` | 降级为 `miniapp_bound=false` | 503 |
+| 微信超时或报错 | 503 | 登录继续，`miniapp_bound=false` | 503 |
+| 微信 code 无效 | 400 `MINIAPP_CODE_INVALID` | 登录继续，`miniapp_bound=false` | 400 |
+| openid 已绑别的账号 | 409 `MINIAPP_BOUND_TO_OTHER` | 409，登录被拒 | 不适用 |
+| 绑定事务失败，或归属无法确认 | 503，可重试 | 登录继续，`miniapp_bound=false` | 不适用 |
+| 撤销版本已变 | 409 `CONFLICT`，可重试 | 409，可重试 | 409，可重试 |
+| 会话 Redis 写失败 | 503，已写的绑定保留 | 503，已写的绑定保留 | 503 |
+
+手机号路径没有别的认证依据，绑定写不进去就不签发；密码路径已通过密码认证，绑定只是附加能力，失败时降级，只有确认 openid 属于别的账号时才拒绝。`miniapp_bound=true` 的条件是：库里存在这个 openid 的绑定行，并且它属于本次登录的用户。
+
+### 13.6 日志和审计
+
+- `LoginRequest.code`、微信登录消息的 `code` 和 `phone_code`、`PhoneVerification.code`、`EmailVerification.code` 都加了脱敏注解；访问日志的兜底字段名单含 `phone_code`（不含 `code`，业务字段也叫 `code`）。
+- `pkg/wechat` 只向外返回不含 URL、请求、响应正文和微信 `errmsg` 的 `Error`。日志里 openid 只留前 6 后 4，手机号和邮箱打码。
+- 登录审计：`MiniappAuthService.LoginByPhone` 进 `loginOperations`，`MiniappAuthService.Logout` 进登出操作清单；静默续期不进登录审计，和管理端刷新一样。管理端解绑是一次 DELETE，操作审计自动记录。
