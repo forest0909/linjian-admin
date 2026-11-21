@@ -29,11 +29,13 @@ Taro 4.3.3 + React 18 + TypeScript，组件库 NutUI-React（Taro 版）4.0.0，
 config/                 Taro 构建配置（index.ts 公共，dev.ts / prod.ts 分环境）
 .env.development        开发构建的环境变量
 .env.production         生产构建的环境变量
+scripts/gen-tabbar-icons.mjs   从 SVG 生成 tabBar 的 PNG 图标
 src/
   app.ts / app.config.ts / app.scss
+  assets/tabbar/        tabBar 图标：SVG 源文件和生成的 PNG
   pages/login/          登录：微信一键登录，可切到账号密码
-  pages/home/           首页占位
-  pages/mine/           我的：头像、资料、改密、退出
+  pages/home/           首页占位（tab 页）
+  pages/mine/           我的：头像、资料、改密、退出（tab 页）
   api/auth.ts           登录、退出、验证码
   api/profile.ts        /me、改密、头像
   core/request.ts       请求封装（带令牌、错误提示、令牌失效后的续期和重放）
@@ -65,7 +67,24 @@ src/
 4. 接口函数写进 `src/api/`，一律走 `request()`。
 5. 样式按 750 设计稿写 px，Taro 会转成 rpx / rem。页面底色写在页面根节点上（`min-height: 100vh` 加 `background`），`page` 选择器在 H5 下不生效。
 
+页面之间的跳转：进 tab 页（首页、我的）用 `Taro.switchTab` 或 `Taro.reLaunch`，`navigateTo` 进不去；进普通页面用 `Taro.navigateTo`。
+
 组件用 NutUI：`import { Button, Cell } from '@nutui/nutui-react-taro'`。已配置按需引入，不要再单独 import 样式文件。主色在 `src/app.scss` 里用 CSS 变量改成了和管理端一样的 `#006be6`。
+
+## 底部 tabBar
+
+`src/app.config.ts` 的 `tabBar` 配了两项：首页、我的。不在 `list` 里的页面（登录页和以后加的普通页面）不显示 tabBar。
+
+加一个 tab：
+
+1. 在 `src/assets/tabbar/` 放一个 `<name>.svg`。24×24 的 viewBox，用 `currentColor` 画线，照着 `home.svg` 写。
+2. 跑 `node scripts/gen-tabbar-icons.mjs`，生成 `<name>.png`（未选中）和 `<name>-active.png`（选中），81×81，透明底。脚本用本机的 Chrome 栅格化，不需要装依赖；Chrome 不在默认位置时用 `CHROME_PATH` 指定。
+3. 在 `tabBar.list` 里加一项，`iconPath` 和 `selectedIconPath` 指向这两张 PNG。小程序的 tabBar 只收 PNG / JPG，最多 5 项。
+4. SVG 和 PNG 一起提交。构建和 CI 不跑这个脚本。
+
+改 tabBar 的颜色要改两处：`app.config.ts` 的 `color` / `selectedColor` 和脚本里的 `COLORS`，然后重新生成。
+
+**H5 下的弹层。** Taro 在 H5 里把每个页面放进一个 `z-index: 0` 的层叠上下文，tabBar 是 `z-index: 500`，页面里的 Popup、Dialog、遮罩默认会被 tabBar 压住。`src/app.scss` 末尾有一条只在 H5 生效的样式把页面容器抬到 tabBar 之上，所以弹层直接用就行，不用自己处理。不要删那条样式。小程序的 tabBar 是原生的，弹层贴着它的上沿显示。
 
 ## 请求封装
 

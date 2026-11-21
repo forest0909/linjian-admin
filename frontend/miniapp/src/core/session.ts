@@ -13,7 +13,6 @@ import { isRenewRejected, TEXT_SESSION_EXPIRED } from './errors'
 
 export const LOGIN_PAGE = '/pages/login/index'
 export const HOME_PAGE = '/pages/home/index'
-export const MINE_PAGE = '/pages/mine/index'
 
 const STORAGE_KEY = 'linjian.miniapp.session'
 
