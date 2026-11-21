@@ -120,8 +120,28 @@ func (s *userServiceUserRepoStub) Update(_ context.Context, req *identityV1.Upda
 	return nil
 }
 
-// UpdateGuarded 桩不落库，也不判断号码是否变更：只记录调用，回放 updateOutcome。
-func (s *userServiceUserRepoStub) UpdateGuarded(_ context.Context, req *identityV1.UpdateUserRequest, _ data.MobileChangeGuard) (data.UserUpdateOutcome, error) {
+// UpdateGuarded 桩不写用户行，也不判断号码是否变更：记录调用，回放 updateOutcome。
+// 请求附带重置密码时照真实仓储的顺序走一遍 guard：先检查（角色取桩里登记的），再在事务里改密。
+func (s *userServiceUserRepoStub) UpdateGuarded(ctx context.Context, req *identityV1.UpdateUserRequest, guard *data.UserUpdateGuard) (data.UserUpdateOutcome, error) {
+	if guard != nil && guard.ResetPassword != nil {
+		tx, err := s.client.Tx(ctx)
+		if err != nil {
+			return s.updateOutcome, err
+		}
+		if guard.CheckCredentialWrite != nil {
+			if err = guard.CheckCredentialWrite(ctx, tx, req.GetId(), s.roleIDsByUser[req.GetId()]); err != nil {
+				_ = tx.Rollback()
+				return s.updateOutcome, err
+			}
+		}
+		if err = guard.ResetPassword(ctx, tx); err != nil {
+			_ = tx.Rollback()
+			return s.updateOutcome, err
+		}
+		if err = tx.Commit(); err != nil {
+			return s.updateOutcome, err
+		}
+	}
 	s.updates = append(s.updates, req)
 	return s.updateOutcome, nil
 }
@@ -1026,6 +1046,8 @@ func TestUserServiceSqlite_EditUserPassword(t *testing.T) {
 	e.seedUserSvcCredential(t, nil, 10601, "usersvc-edit-target-platform")
 	// Username 必填：EditUserPassword 以目标用户行的用户名为标识符定位凭证。
 	e.stub.usersByID[10601] = &identityV1.User{Id: trans.Ptr(uint32(10601)), Username: trans.Ptr("usersvc-edit-target-platform")}
+	// 重置密码在事务里先锁目标用户行，库里要有这一行（桩只回放 Get）。
+	e.stub.client.User.Create().SetID(10601).SetUsername("usersvc-edit-target-platform").SaveX(e.ctx)
 	e.seedUserSvcCredential(t, trans.Ptr(tenantB), 10603, "usersvc-edit-target-foreign")
 	e.stub.usersByID[10603] = &identityV1.User{Id: trans.Ptr(uint32(10603)), TenantId: trans.Ptr(tenantB), Username: trans.Ptr("usersvc-edit-target-foreign")}
 

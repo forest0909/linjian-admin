@@ -119,6 +119,7 @@ ifneq ("$(wildcard ./internal/data/ent)","")
 				--feature sql/modifier \
 				--feature sql/upsert \
 				--feature sql/lock \
+				--feature sql/execquery \
 				./internal/data/ent/schema
 endif
 

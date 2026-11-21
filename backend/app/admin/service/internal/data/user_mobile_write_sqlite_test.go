@@ -139,25 +139,26 @@ func TestUserRepoUpdateGuarded_MobileWrite(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			e := newMobileWriteEnv(t)
 			id := e.seedUser(t, "target", oldMobile)
+			e.client.UserRole.Create().SetUserID(id).SetRoleID(77).SaveX(e.ctx)
 
 			var guardCalls int
-			var guardMobile string
 			req := &identityV1.UpdateUserRequest{Id: id, Data: tc.data}
 			if tc.mask != nil {
 				req.UpdateMask = &fieldmaskpb.FieldMask{Paths: tc.mask}
 			}
-			outcome, err := e.users.UpdateGuarded(e.ctx, req, func(_ context.Context, tx *ent.Tx, userID uint32, newMobile string) error {
-				guardCalls++
-				guardMobile = newMobile
-				require.NotNil(t, tx)
-				require.Equal(t, id, userID)
-				return nil
+			outcome, err := e.users.UpdateGuarded(e.ctx, req, &UserUpdateGuard{
+				CheckCredentialWrite: func(_ context.Context, tx *ent.Tx, userID uint32, roleIDs []uint32) error {
+					guardCalls++
+					require.NotNil(t, tx)
+					require.Equal(t, id, userID)
+					require.Equal(t, []uint32{77}, roleIDs, "角色是锁内从库里读的")
+					return nil
+				},
 			})
 			require.NoError(t, err)
 			require.Equal(t, tc.wantChanged, outcome.MobileChanged, "MobileChanged")
 			if tc.wantChanged {
 				require.Equal(t, 1, guardCalls, "号码变更要过 guard")
-				require.Equal(t, tc.wantMobile, guardMobile)
 			} else {
 				require.Zero(t, guardCalls, "没有变更不该调 guard")
 			}
@@ -175,7 +176,7 @@ func TestUserRepoUpdateGuarded_MobileWrite(t *testing.T) {
 		_, err := e.users.UpdateGuarded(e.ctx, &identityV1.UpdateUserRequest{
 			Id:   id,
 			Data: &identityV1.User{Mobile: trans.Ptr("13900000002"), Nickname: trans.Ptr("new-nick")},
-		}, func(context.Context, *ent.Tx, uint32, string) error { return denied })
+		}, &UserUpdateGuard{CheckCredentialWrite: func(context.Context, *ent.Tx, uint32, []uint32) error { return denied }})
 		require.ErrorIs(t, err, denied)
 		got := e.user(t, id)
 		require.Equal(t, oldMobile, derefString(got.Mobile))
@@ -228,6 +229,65 @@ func TestUserRepoUpdateGuarded_MobileWrite(t *testing.T) {
 		require.False(t, outcome.MobileChanged)
 		require.Equal(t, "010-12345678", derefString(e.user(t, id).Mobile))
 	})
+}
+
+// 显式 mask 在仓储里被删空（掩码回传的邮箱是唯一路径）时，不能退化成全量更新。
+func TestUserRepoUpdate_ExplicitMaskEmptiedIsNotFullUpdate(t *testing.T) {
+	e := newMobileWriteEnv(t)
+	id := e.seedUser(t, "target", "13800000001")
+	require.NoError(t, e.client.User.UpdateOneID(id).SetEmail("real@example.com").Exec(e.ctx))
+
+	data := func() *identityV1.User {
+		return &identityV1.User{
+			Email:    trans.Ptr("re***@example.com"), // 掩码回传
+			Mobile:   trans.Ptr("13900000002"),
+			Nickname: trans.Ptr("new-nick"),
+			Status:   identityV1.User_DISABLED.Enum(),
+		}
+	}
+	requireUnchanged := func() {
+		t.Helper()
+		got := e.user(t, id)
+		require.Equal(t, "13800000001", derefString(got.Mobile))
+		require.Equal(t, "real@example.com", derefString(got.Email))
+		require.Equal(t, "old-nick", derefString(got.Nickname))
+		require.NotEqual(t, "DISABLED", string(*got.Status))
+	}
+
+	// mask 只有 email，值是掩码：过滤后 mask 为空，什么用户字段都不写。
+	outcome, err := e.users.UpdateGuarded(e.ctx, &identityV1.UpdateUserRequest{
+		Id: id, Data: data(), UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"email"}},
+	}, nil)
+	require.NoError(t, err)
+	require.False(t, outcome.MobileChanged)
+	requireUnchanged()
+
+	// mask 只有关联字段：同样不写用户字段，关联照常更新。
+	_, err = e.users.UpdateGuarded(e.ctx, &identityV1.UpdateUserRequest{
+		Id: id, Data: func() *identityV1.User { d := data(); d.RoleIds = []uint32{5}; return d }(),
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"role_ids"}},
+	}, nil)
+	require.NoError(t, err)
+	requireUnchanged()
+	roleIDs, err := e.users.ListRoleIDsByUserID(e.ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, []uint32{5}, roleIDs)
+
+	// 允许的字段照常写：mask 里除了掩码邮箱还有 nickname，只写 nickname。
+	_, err = e.users.UpdateGuarded(e.ctx, &identityV1.UpdateUserRequest{
+		Id: id, Data: data(), UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"email", "nickname"}},
+	}, nil)
+	require.NoError(t, err)
+	got := e.user(t, id)
+	require.Equal(t, "new-nick", derefString(got.Nickname))
+	require.Equal(t, "13800000001", derefString(got.Mobile))
+	require.Equal(t, "real@example.com", derefString(got.Email))
+
+	// 目标不存在：404，不是静默成功。
+	_, err = e.users.UpdateGuarded(e.ctx, &identityV1.UpdateUserRequest{
+		Id: 99999, Data: data(), UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"email"}},
+	}, nil)
+	require.True(t, identityV1.IsNotFound(err), "got %v", err)
 }
 
 func (e *mobileWriteEnv) phoneCredentials(t *testing.T, userID uint32) []*ent.UserCredential {

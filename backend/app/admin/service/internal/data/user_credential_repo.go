@@ -666,6 +666,15 @@ func (r *UserCredentialRepo) ChangeCredential(ctx context.Context, userID uint32
 
 // ResetCredential 修改认证信息
 func (r *UserCredentialRepo) ResetCredential(ctx context.Context, userID uint32, req *authenticationV1.ResetCredentialRequest) error {
+	return r.resetCredential(ctx, r.entClient.Client(), userID, req)
+}
+
+// ResetCredentialWithTx 同 ResetCredential，读写都走给定的事务。
+func (r *UserCredentialRepo) ResetCredentialWithTx(ctx context.Context, tx *ent.Tx, userID uint32, req *authenticationV1.ResetCredentialRequest) error {
+	return r.resetCredential(ctx, tx.Client(), userID, req)
+}
+
+func (r *UserCredentialRepo) resetCredential(ctx context.Context, client *ent.Client, userID uint32, req *authenticationV1.ResetCredentialRequest) error {
 	if userID == 0 {
 		return authenticationV1.ErrorBadRequest("user id is required")
 	}
@@ -693,7 +702,7 @@ func (r *UserCredentialRepo) ResetCredential(ctx context.Context, userID uint32,
 		usercredential.TenantIDEQ(0),
 	}
 
-	entity, err := r.entClient.Client().UserCredential.
+	entity, err := client.UserCredential.
 		Query().
 		Select(
 			usercredential.FieldCredentialType,
@@ -734,7 +743,7 @@ func (r *UserCredentialRepo) ResetCredential(ctx context.Context, userID uint32,
 	extraInfo := appendPasswordHistory(entity.ExtraInfo, *entity.Credential,
 		r.configRepo.GetConfigInt(ctx, constants.ConfigKeyPasswordHistoryCount, constants.DefaultPasswordHistoryCount))
 
-	builder := r.entClient.Client().UserCredential.Update()
+	builder := client.UserCredential.Update()
 	builder.Where(tenantWhere...)
 	builder.
 		SetCredential(newCredential).

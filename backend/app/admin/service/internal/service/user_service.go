@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 
 	paginationV1 "go-wind-admin/third_party/go-crud/api/gen/go/pagination/v1"
 	"go-wind-admin/third_party/go-utils/aggregator"
@@ -545,9 +544,6 @@ func (s *UserService) Update(ctx context.Context, req *identityV1.UpdateUserRequ
 	// 更新成功后库里的集合已经是新值，再比就会恒等。
 	// 列举失败按角色已变化处理，避免特权是否还在不确定时留下旧令牌。
 	revokeForRoleChange := false
-	// 目标用户原有的角色：写凭证（密码、手机号）的权限上限按它判定，必须在任何写入之前取。
-	var targetRoleIDs []uint32
-	targetRolesKnown := false
 	if userUpdateRewritesRoles(req) {
 		currentRoleIDs, listErr := s.userRepo.ListRoleIDsByUserID(ctx, req.GetId())
 		if listErr != nil {
@@ -556,10 +552,6 @@ func (s *UserService) Update(ctx context.Context, req *identityV1.UpdateUserRequ
 			currentRoleIDs = nil // 现有集合不明：按全部是新加的角色做上限校验
 		} else if !sameUint32Set(sliceutil.Unique(currentRoleIDs), roleIds) {
 			revokeForRoleChange = true
-		}
-
-		if listErr == nil {
-			targetRoleIDs, targetRolesKnown = currentRoleIDs, true
 		}
 
 		// 授权上限只看新加的角色：页面保存会带上目标用户原有的角色，原样保留不算分配。
@@ -574,24 +566,49 @@ func (s *UserService) Update(ctx context.Context, req *identityV1.UpdateUserRequ
 	revokeForStatus := userUpdateDeactivates(req)
 
 	// 密码和手机号都是登录凭证：操作人不能给权限比自己高的账号重置密码或改号。
-	// 检查按目标用户原有的角色做，放在任何写入之前；不通过时这个请求的字段、角色、密码一律不写。
-	resetsPassword := len(req.GetPassword()) > 0
-	var credentialCeilingErr error
-	if resetsPassword || userUpdateMayWriteMobile(req) {
-		credentialCeilingErr = s.ensureCredentialWriteAllowed(ctx, operator, req.GetId(), targetRoleIDs, targetRolesKnown)
-	}
-	if resetsPassword && credentialCeilingErr != nil {
-		s.log.Errorf(ctx, "operator [%d] reset password of user [%d] rejected: %v", operator.GetUserId(), req.GetId(), credentialCeilingErr)
-		return nil, credentialCeilingErr
+	// 检查在仓储的更新事务里做：锁住目标用户行之后、任何写入之前，按锁内读到的角色
+	// （也就是这次请求改写角色之前的角色）判定。不通过时这个请求的字段、角色、密码一律不写。
+	guard := &data.UserUpdateGuard{
+		CheckCredentialWrite: func(cctx context.Context, _ *ent.Tx, userID uint32, roleIDs []uint32) error {
+			cerr := s.ensureCredentialWriteAllowed(cctx, operator, userID, roleIDs)
+			if cerr != nil {
+				s.log.Errorf(ctx, "operator [%d] write credential of user [%d] rejected: %v", operator.GetUserId(), userID, cerr)
+			}
+			return cerr
+		},
 	}
 
-	// 更新用户。号码确实要变（含清空）时仓储在事务里回调，检查不通过整个更新回滚。
-	outcome, err := s.userRepo.UpdateGuarded(ctx, req, func(_ context.Context, _ *ent.Tx, userID uint32, _ string) error {
-		if credentialCeilingErr != nil {
-			s.log.Errorf(ctx, "operator [%d] change mobile of user [%d] rejected: %v", operator.GetUserId(), userID, credentialCeilingErr)
+	resetsPassword := len(req.GetPassword()) > 0
+	if resetsPassword {
+		// 跨租户防护：非平台超级管理员重置密码前，校验目标用户真实租户。
+		// 防 IDOR：必须用 DB 中的目标用户名，而非请求体里可伪造的 username，
+		// 保证重置目标与请求 id 严格一致（避免 id=甲 + username=乙 实际重置了乙）。
+		targetUser, gerr := s.userRepo.Get(ctx, &identityV1.GetUserRequest{
+			QueryBy: &identityV1.GetUserRequest_Id{Id: req.GetId()},
+		})
+		if gerr != nil {
+			return nil, gerr
 		}
-		return credentialCeilingErr
-	})
+		if !operator.GetIsPlatformAdmin() && targetUser.GetTenantId() != operator.GetTenantId() {
+			s.log.Errorf(ctx, "operator [%d] (tenant %d) has no permission to reset password of cross-tenant user [%d] (tenant %d)",
+				operator.GetUserId(), operator.GetTenantId(), targetUser.GetId(), targetUser.GetTenantId())
+			return nil, adminV1.ErrorForbidden("no permission to reset password of user in other tenant")
+		}
+		targetUsername := targetUser.GetUsername()
+		targetID, newPassword := req.GetId(), req.GetPassword()
+		// 改密和用户行、角色在同一个事务里：权限检查不通过或口令不合规时一起回滚。
+		guard.ResetPassword = func(cctx context.Context, tx *ent.Tx) error {
+			return s.userCredentialRepo.ResetCredentialWithTx(cctx, tx, targetID, &authenticationV1.ResetCredentialRequest{
+				IdentityType:  authenticationV1.UserCredential_USERNAME,
+				Identifier:    targetUsername,
+				NewCredential: newPassword,
+				NeedDecrypt:   true, // 前端 AES 密文传输，解密后才走复杂度/哈希
+			})
+		}
+	}
+
+	// 更新用户。
+	outcome, err := s.userRepo.UpdateGuarded(ctx, req, guard)
 	if err != nil {
 		s.log.Error(ctx, err.Error())
 		return nil, err
@@ -614,51 +631,11 @@ func (s *UserService) Update(ctx context.Context, req *identityV1.UpdateUserRequ
 		}
 	}
 
-	if len(req.GetPassword()) > 0 {
-		// 跨租户防护：非平台超级管理员重置密码前，校验目标用户真实租户
-		// 注意：此处不能用 req.Data.GetTenantId()，因为上方已将其覆盖为操作者租户
-		var targetUsername string
-		if !operator.GetIsPlatformAdmin() {
-			targetUser, gerr := s.userRepo.Get(ctx, &identityV1.GetUserRequest{
-				QueryBy: &identityV1.GetUserRequest_Id{Id: req.GetId()},
-			})
-			if gerr != nil {
-				return nil, gerr
-			}
-			if targetUser.GetTenantId() != operator.GetTenantId() {
-				s.log.Errorf(ctx, "operator [%d] (tenant %d) has no permission to reset password of cross-tenant user [%d] (tenant %d)",
-					operator.GetUserId(), operator.GetTenantId(), targetUser.GetId(), targetUser.GetTenantId())
-				return nil, adminV1.ErrorForbidden("no permission to reset password of user in other tenant")
-			}
-			// 防 IDOR：必须用 DB 中已校验租户的目标用户名，而非请求体里可伪造的 username。
-			// 否则攻击者可用 id=本租户用户 + username=他租户用户 绕过上面的租户校验。
-			targetUsername = targetUser.GetUsername()
-		} else {
-			// 平台管理员：无跨租户限制，但仍按 id 从 DB 取 username——
-			// 既校验目标用户存在，也保证重置目标与请求 id 严格一致
-			// （避免 id=甲 + username=乙 的参数错位实际重置了乙）
-			targetUser, gerr := s.userRepo.Get(ctx, &identityV1.GetUserRequest{
-				QueryBy: &identityV1.GetUserRequest_Id{Id: req.GetId()},
-			})
-			if gerr != nil {
-				return nil, gerr
-			}
-			targetUsername = targetUser.GetUsername()
-		}
-
-		if err = s.userCredentialRepo.ResetCredential(ctx, req.GetId(), &authenticationV1.ResetCredentialRequest{
-			IdentityType:  authenticationV1.UserCredential_USERNAME,
-			Identifier:    targetUsername,
-			NewCredential: req.GetPassword(),
-			NeedDecrypt:   true, // 前端 AES 密文传输，解密后才走复杂度/哈希
-		}); err != nil {
-			return nil, err
-		}
-
+	if resetsPassword {
 		// 重置密码成功后吊销目标用户全部令牌，强制其重新登录，
 		// 防止凭据已泄露的场景下旧令牌继续可用。
-		if err = s.authenticator.RevokeUserTokenAllClientTypes(ctx, req.GetId()); err != nil {
-			s.log.Errorf(ctx, "revoke tokens after password reset failed for user [%d]: %v", req.GetId(), err)
+		if rerr := s.authenticator.RevokeUserTokenAllClientTypes(ctx, req.GetId()); rerr != nil {
+			s.log.Errorf(ctx, "revoke tokens after password reset failed for user [%d]: %v", req.GetId(), rerr)
 		}
 	}
 
@@ -670,35 +647,13 @@ func (s *UserService) Update(ctx context.Context, req *identityV1.UpdateUserRequ
 	return &emptypb.Empty{}, nil
 }
 
-// userUpdateMayWriteMobile 这次更新有没有可能写 mobile（宽松判断，只用来决定要不要提前算权限上限；
-// 是否真的变更由仓储在事务里按实际写入值判定）。含 * 的值是掩码回传，仓储会跳过。
-func userUpdateMayWriteMobile(req *identityV1.UpdateUserRequest) bool {
-	if m := req.GetData().Mobile; m != nil && !strings.Contains(*m, "*") {
-		return true
-	}
-	for _, p := range req.GetUpdateMask().GetPaths() {
-		if p == "mobile" {
-			return true
-		}
-	}
-	return false
-}
-
 // ensureCredentialWriteAllowed 写目标用户的登录凭证（重置密码、改手机号）前的权限上限检查：
-// 目标用户当前的每个角色都必须在操作人的权限上限内。roleIDs 已知时直接用，否则现查。
-// 角色查不出来按不允许处理。
+// 目标用户当前的每个角色都必须在操作人的权限上限内。roleIDs 由仓储在锁住目标用户行之后读出。
 func (s *UserService) ensureCredentialWriteAllowed(ctx context.Context, operator *authenticationV1.UserTokenPayload,
-	targetUserID uint32, roleIDs []uint32, rolesKnown bool) error {
+	targetUserID uint32, roleIDs []uint32) error {
 	// 平台管理员不受限；操作人改自己的账号不存在越权。
 	if operator.GetIsPlatformAdmin() || targetUserID == operator.GetUserId() {
 		return nil
-	}
-	if !rolesKnown {
-		var err error
-		if roleIDs, err = s.userRepo.ListRoleIDsByUserID(ctx, targetUserID); err != nil {
-			s.log.Errorf(ctx, "list roles of user [%d] failed: %v", targetUserID, err)
-			return adminV1.ErrorForbidden("cannot verify authority over target user")
-		}
 	}
 	err := ensureRolesWithinOperator(ctx, s.roleRepo, s.userRepo.ListRoleIDsByUserID, operator, sliceutil.Unique(roleIDs))
 	if adminV1.IsForbidden(err) {
@@ -868,17 +823,15 @@ func (s *UserService) EditUserPassword(ctx context.Context, req *identityV1.Edit
 		return nil, adminV1.ErrorForbidden("no permission to reset password of user in other tenant")
 	}
 
-	// 权限上限：不能给权限比自己高的账号重置密码。
-	if err = s.ensureCredentialWriteAllowed(ctx, operator, u.GetId(), nil, false); err != nil {
-		s.log.Errorf(ctx, "operator [%d] reset password of user [%d] rejected: %v", operator.GetUserId(), u.GetId(), err)
-		return nil, err
-	}
-
-	if err = s.userCredentialRepo.ResetCredential(ctx, u.GetId(), &authenticationV1.ResetCredentialRequest{
+	// 权限上限：不能给权限比自己高的账号重置密码。检查和改密在同一个事务里，
+	// 锁住目标用户行之后按锁内读到的角色判定，中间不会被并发的角色变更插进来。
+	if err = s.userCredentialRepo.ResetCredentialGuarded(ctx, u.GetId(), &authenticationV1.ResetCredentialRequest{
 		IdentityType:  authenticationV1.UserCredential_USERNAME,
 		Identifier:    u.GetUsername(),
 		NewCredential: req.GetNewPassword(),
 		NeedDecrypt:   true, // 前端 AES 密文传输，解密后才走复杂度/哈希
+	}, func(cctx context.Context, _ *ent.Tx, roleIDs []uint32) error {
+		return s.ensureCredentialWriteAllowed(cctx, operator, u.GetId(), roleIDs)
 	}); err != nil {
 		s.log.Errorf(ctx, "reset user password err: %v", err)
 		return nil, err

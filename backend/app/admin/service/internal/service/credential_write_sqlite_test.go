@@ -242,6 +242,23 @@ func TestProfileUpdate_MobileIsNotSelfEditable(t *testing.T) {
 	// 其他可编辑字段照常生效（最后一次带 nickname 的请求是前两种之一）。
 	require.True(t, strings.HasPrefix(e.nickname(t, id), "nick-"))
 
+	// mask 里唯一的可编辑字段是掩码回传的邮箱：仓储会把它从 mask 里删掉，
+	// 删空之后不能退化成全量更新，手机号和账号状态都保持原值。
+	require.NoError(t, e.client.User.UpdateOneID(id).SetEmail("real@example.com").SetNickname("keep-0").Exec(e.sys))
+	_, err0 := e.profile.UpdateUser(ctx, &identityV1.UpdateUserRequest{
+		Data: &identityV1.User{
+			Email: trans.Ptr("re***@example.com"), Mobile: trans.Ptr("13900000002"),
+			Nickname: trans.Ptr("overwritten"), Status: identityV1.User_DISABLED.Enum(),
+		},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"email"}},
+	})
+	require.NoError(t, err0)
+	row := e.client.User.GetX(e.sys, id)
+	require.Equal(t, "13800000001", *row.Mobile)
+	require.Equal(t, "real@example.com", *row.Email)
+	require.Equal(t, "keep-0", *row.Nickname)
+	require.NotEqual(t, "DISABLED", string(*row.Status))
+
 	// mask 里一个可编辑字段都没有：什么都不写，不会退化成全量更新。
 	require.NoError(t, e.client.User.UpdateOneID(id).SetNickname("keep").Exec(e.sys))
 	_, err := e.profile.UpdateUser(ctx, &identityV1.UpdateUserRequest{
@@ -652,6 +669,137 @@ func TestAdminCredentialWrite_PrivilegeCeiling(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.Equal(t, "13900000002", f.e.mobile(t, f.target))
+	})
+}
+
+// racingUserRepo 在指定时点插入一次「别的请求先提交」的动作，用来模拟并发。
+type racingUserRepo struct {
+	data.UserRepo
+	afterGet      func() // Get 返回之后
+	beforeUpdate  func() // UpdateGuarded 进入仓储之前
+	afterGetFired bool
+}
+
+func (r *racingUserRepo) Get(ctx context.Context, req *identityV1.GetUserRequest) (*identityV1.User, error) {
+	u, err := r.UserRepo.Get(ctx, req)
+	if r.afterGet != nil && !r.afterGetFired {
+		r.afterGetFired = true
+		r.afterGet()
+	}
+	return u, err
+}
+
+func (r *racingUserRepo) UpdateGuarded(ctx context.Context, req *identityV1.UpdateUserRequest, guard *data.UserUpdateGuard) (data.UserUpdateOutcome, error) {
+	if r.beforeUpdate != nil {
+		r.beforeUpdate()
+	}
+	return r.UserRepo.UpdateGuarded(ctx, req, guard)
+}
+
+// 并发：目标用户在操作人的请求进入之后、凭证写入之前被授予更高权限（先提交）。
+// 权限检查用的是事务里锁住用户行之后读到的角色，所以后到的凭证写入被拒，也没有附带写入。
+func TestAdminCredentialWrite_RoleElevatedConcurrently(t *testing.T) {
+	const oldMobile = "13800000001"
+
+	type fixture struct {
+		e                *credWriteEnv
+		operator, target uint32
+		lowRole, bigRole uint32
+		opCtx            context.Context
+		race             *racingUserRepo
+	}
+	setup := func(t *testing.T) *fixture {
+		e := newCredWriteEnv(t)
+		lowRole := e.userSvcEn.seedRoleWithPerms(t, "RACE_LOW", []uint32{11})
+		bigRole := e.userSvcEn.seedRoleWithPerms(t, "RACE_BIG", []uint32{11, 22})
+		operator := e.seedUser(t, "operator", "13700000007", lowRole)
+		// 请求开始时目标和操作人同级，操作人有权写它的凭证。
+		target := e.seedUser(t, "target", oldMobile, lowRole)
+		race := &racingUserRepo{UserRepo: e.users.userRepo}
+		e.users.userRepo = race
+		return &fixture{e: e, operator: operator, target: target, lowRole: lowRole, bigRole: bigRole,
+			opCtx: opCtx(e.sys, operator, 0, false), race: race}
+	}
+	// elevate 另一个请求把目标升成高权限角色并提交。
+	elevate := func(f *fixture) func() {
+		return func() { f.e.client.UserRole.Create().SetUserID(f.target).SetRoleID(f.bigRole).SaveX(f.e.sys) }
+	}
+	requireCredentialsUntouched := func(t *testing.T, f *fixture) {
+		t.Helper()
+		require.Equal(t, oldMobile, f.e.mobile(t, f.target))
+		require.Equal(t, "old-nick", f.e.nickname(t, f.target))
+		_, err := f.e.userSvcEn.findCred(t, 0, "target", constants.DefaultUserPassword)
+		require.NoError(t, err, "目标用户的密码不应被改动")
+	}
+
+	t.Run("改号", func(t *testing.T) {
+		f := setup(t)
+		f.race.beforeUpdate = elevate(f)
+		_, err := f.e.users.Update(f.opCtx, &identityV1.UpdateUserRequest{
+			Id:         f.target,
+			Data:       &identityV1.User{Mobile: trans.Ptr("13900000002"), Nickname: trans.Ptr("new-nick"), RoleIds: []uint32{f.lowRole}},
+			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"mobile", "nickname"}},
+		})
+		require.True(t, adminV1.IsForbidden(err), "got %v", err)
+		requireCredentialsUntouched(t, f)
+	})
+
+	t.Run("更新用户时附带密码", func(t *testing.T) {
+		f := setup(t)
+		f.race.beforeUpdate = elevate(f)
+		_, err := f.e.users.Update(f.opCtx, &identityV1.UpdateUserRequest{
+			Id:         f.target,
+			Data:       &identityV1.User{Nickname: trans.Ptr("new-nick"), RoleIds: []uint32{f.lowRole}},
+			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"nickname", "role_ids"}},
+			Password:   trans.Ptr(encryptLoginPassword(t, "HackedP@ss888")),
+		})
+		require.True(t, adminV1.IsForbidden(err), "got %v", err)
+		requireCredentialsUntouched(t, f)
+		// 同一请求里的角色改写也没生效：先提交的升权还在。
+		roleIDs, lerr := f.e.users.userRepo.ListRoleIDsByUserID(f.e.sys, f.target)
+		require.NoError(t, lerr)
+		require.ElementsMatch(t, []uint32{f.lowRole, f.bigRole}, roleIDs)
+	})
+
+	t.Run("独立重置密码", func(t *testing.T) {
+		f := setup(t)
+		// EditUserPassword 先按数据范围取目标用户，之后才进入改密事务：升权插在这中间。
+		f.race.afterGet = elevate(f)
+		_, err := f.e.users.EditUserPassword(f.opCtx, &identityV1.EditUserPasswordRequest{
+			UserId: f.target, NewPassword: encryptLoginPassword(t, "HackedP@ss888"),
+		})
+		require.True(t, adminV1.IsForbidden(err), "got %v", err)
+		requireCredentialsUntouched(t, f)
+	})
+
+	t.Run("对照：没有并发升权时三种写入都成功", func(t *testing.T) {
+		f := setup(t)
+		_, err := f.e.users.Update(f.opCtx, &identityV1.UpdateUserRequest{
+			Id:         f.target,
+			Data:       &identityV1.User{Mobile: trans.Ptr("13900000002"), RoleIds: []uint32{f.lowRole}},
+			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"mobile"}},
+			Password:   trans.Ptr(encryptLoginPassword(t, "TargetNewP@ss66")),
+		})
+		require.NoError(t, err)
+		require.Equal(t, "13900000002", f.e.mobile(t, f.target))
+		_, err = f.e.userSvcEn.findCred(t, 0, "target", "TargetNewP@ss66")
+		require.NoError(t, err)
+		_, err = f.e.users.EditUserPassword(f.opCtx, &identityV1.EditUserPasswordRequest{
+			UserId: f.target, NewPassword: encryptLoginPassword(t, "TargetNewP@ss77"),
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("附带的密码不合规时，同一请求的字段也不写", func(t *testing.T) {
+		f := setup(t)
+		_, err := f.e.users.Update(f.opCtx, &identityV1.UpdateUserRequest{
+			Id:         f.target,
+			Data:       &identityV1.User{Nickname: trans.Ptr("new-nick"), RoleIds: []uint32{f.lowRole}},
+			UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"nickname"}},
+			Password:   trans.Ptr(encryptLoginPassword(t, "weak")),
+		})
+		require.Error(t, err)
+		requireCredentialsUntouched(t, f)
 	})
 }
 

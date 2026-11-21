@@ -45,9 +45,9 @@ type UserRepo interface {
 	BeginTx(ctx context.Context) (*ent.Tx, error)
 
 	Update(ctx context.Context, req *identityV1.UpdateUserRequest) error
-	// UpdateGuarded 同 Update，另外把手机号当登录凭证处理：号码确实要变时在事务里、
-	// 写入之前回调 guard（返回错误则整个更新回滚），并返回这次更新里手机号的实际去向。
-	UpdateGuarded(ctx context.Context, req *identityV1.UpdateUserRequest, guard MobileChangeGuard) (UserUpdateOutcome, error)
+	// UpdateGuarded 同 Update，另外把手机号和密码当登录凭证处理：要写凭证时在事务里、锁住用户行之后、
+	// 写入之前回调 guard（返回错误则整个更新回滚），并返回这次更新里手机号的实际去向。见 UserUpdateGuard。
+	UpdateGuarded(ctx context.Context, req *identityV1.UpdateUserRequest, guard *UserUpdateGuard) (UserUpdateOutcome, error)
 
 	Delete(ctx context.Context, req *identityV1.DeleteUserRequest) error
 
@@ -654,8 +654,8 @@ func (r *userRepo) Update(ctx context.Context, req *identityV1.UpdateUserRequest
 	return err
 }
 
-// UpdateGuarded 更新用户；手机号的变更检查见 guardMobileWrite。
-func (r *userRepo) UpdateGuarded(ctx context.Context, req *identityV1.UpdateUserRequest, guard MobileChangeGuard) (outcome UserUpdateOutcome, err error) {
+// UpdateGuarded 更新用户；凭证写入的检查见 guardCredentialWrite。
+func (r *userRepo) UpdateGuarded(ctx context.Context, req *identityV1.UpdateUserRequest, guard *UserUpdateGuard) (outcome UserUpdateOutcome, err error) {
 	if req == nil || req.Data == nil {
 		return outcome, identityV1.ErrorBadRequest("invalid parameter")
 	}
@@ -702,6 +702,9 @@ func (r *userRepo) UpdateGuarded(ctx context.Context, req *identityV1.UpdateUser
 	// 非 nil mask 做赋值/剔除，故此处初始化空 mask（panic 修复，e2e 揪出）。
 	normalizeUserUniqueFields(req.Data)
 
+	// 调用方有没有显式给出 mask 路径。显式 mask 在下面的过滤里可能被删空（关联字段、掩码回传），
+	// 那表示「没有用户字段要写」，不能当成没给 mask 的全量更新。
+	explicitMask := len(req.GetUpdateMask().GetPaths()) > 0
 	if req.GetUpdateMask() == nil {
 		req.UpdateMask = &fieldmaskpb.FieldMask{}
 	}
@@ -775,39 +778,24 @@ func (r *userRepo) UpdateGuarded(ctx context.Context, req *identityV1.UpdateUser
 		req.GetUpdateMask().Paths = sliceutil.FilterBlacklist(req.GetUpdateMask().Paths, []string{"mobile"})
 	}
 
-	// 手机号是登录凭证：号码确实要变时先过 guard，再写任何东西。
-	if outcome, err = r.guardMobileWrite(ctx, tx, req, guard); err != nil {
+	// 先锁用户行。凭证写入（改号、改密）和角色变更都先锁这一行，对同一个用户串行。
+	current, err := lockUserRow(ctx, tx, r.entClient.Driver().Dialect(), req.GetId())
+	if err != nil {
+		return outcome, mapUserWriteError(r.log, ctx, "lock user", err)
+	}
+
+	// 手机号和密码是登录凭证：要写它们时先过 guard，再写任何东西。
+	if outcome, err = r.guardCredentialWrite(ctx, tx, current, req, explicitMask, guard); err != nil {
 		return outcome, err
 	}
 
 	var entity *identityV1.User
-	builder := tx.User.UpdateOneID(req.GetId())
-	entity, err = r.repository.UpdateOne(ctx, builder, req.Data, req.GetUpdateMask(),
-		func(dto *identityV1.User) {
-			builder.
-				SetNillableNickname(req.Data.Nickname).
-				SetNillableRealname(req.Data.Realname).
-				SetNillableAvatar(req.Data.Avatar).
-				SetNillableEmail(req.Data.Email).
-				SetNillableMobile(req.Data.Mobile).
-				SetNillableTelephone(req.Data.Telephone).
-				SetNillableRegion(req.Data.Region).
-				SetNillableLocale(req.Data.Locale).
-				SetNillableAddress(req.Data.Address).
-				SetNillableDescription(req.Data.Description).
-				SetNillableRemark(req.Data.Remark).
-				SetNillableLastLoginAt(timeutil.TimestamppbToTime(req.Data.LastLoginAt)).
-				SetNillableLockedUntil(timeutil.TimestamppbToTime(req.Data.LockedUntil)).
-				SetNillableLastLoginIP(req.Data.LastLoginIp).
-				SetNillableGender(r.genderConverter.ToEntity(req.Data.Gender)).
-				SetNillableStatus(r.statusConverter.ToEntity(req.Data.Status)).
-				SetNillableUpdatedBy(req.Data.UpdatedBy).
-				SetUpdatedAt(time.Now())
-		},
-		func(s *sql.Selector) {
-			s.Where(sql.EQ(user.FieldID, req.GetId()))
-		},
-	)
+	if explicitMask && len(req.GetUpdateMask().GetPaths()) == 0 {
+		// 显式 mask 过滤后没有用户字段要写：跳过用户行，只做下面的关联更新。
+		entity = r.mapper.ToDTO(current)
+	} else {
+		entity, err = r.updateUserRow(ctx, tx, req)
+	}
 	// 用户行没更新成功就不能再动关联：以前这里不查 err，紧接着被 assignUserRelations 的结果覆盖，
 	// 用户不存在 / 唯一冲突时照样按 tenant_id=0 重写关联并提交，接口回 200。
 	if err != nil {
@@ -835,11 +823,49 @@ func (r *userRepo) UpdateGuarded(ctx context.Context, req *identityV1.UpdateUser
 		}
 	}
 
+	// 附带重置密码：和用户行、角色在同一个事务里，权限检查不通过或改密失败都一起回滚。
+	if guard != nil && guard.ResetPassword != nil {
+		if err = guard.ResetPassword(ctx, tx); err != nil {
+			return outcome, err
+		}
+	}
+
 	if commitErr := commitEntTx(tx, &txCommitted); commitErr != nil {
 		r.log.Errorf(ctx, "transaction commit failed: %s", commitErr.Error())
 		return outcome, identityV1.ErrorInternalServerError("transaction commit failed")
 	}
 	return outcome, nil
+}
+
+// updateUserRow 按 mask 写用户行的字段。
+func (r *userRepo) updateUserRow(ctx context.Context, tx *ent.Tx, req *identityV1.UpdateUserRequest) (*identityV1.User, error) {
+	builder := tx.User.UpdateOneID(req.GetId())
+	return r.repository.UpdateOne(ctx, builder, req.Data, req.GetUpdateMask(),
+		func(dto *identityV1.User) {
+			builder.
+				SetNillableNickname(req.Data.Nickname).
+				SetNillableRealname(req.Data.Realname).
+				SetNillableAvatar(req.Data.Avatar).
+				SetNillableEmail(req.Data.Email).
+				SetNillableMobile(req.Data.Mobile).
+				SetNillableTelephone(req.Data.Telephone).
+				SetNillableRegion(req.Data.Region).
+				SetNillableLocale(req.Data.Locale).
+				SetNillableAddress(req.Data.Address).
+				SetNillableDescription(req.Data.Description).
+				SetNillableRemark(req.Data.Remark).
+				SetNillableLastLoginAt(timeutil.TimestamppbToTime(req.Data.LastLoginAt)).
+				SetNillableLockedUntil(timeutil.TimestamppbToTime(req.Data.LockedUntil)).
+				SetNillableLastLoginIP(req.Data.LastLoginIp).
+				SetNillableGender(r.genderConverter.ToEntity(req.Data.Gender)).
+				SetNillableStatus(r.statusConverter.ToEntity(req.Data.Status)).
+				SetNillableUpdatedBy(req.Data.UpdatedBy).
+				SetUpdatedAt(time.Now())
+		},
+		func(s *sql.Selector) {
+			s.Where(sql.EQ(user.FieldID, req.GetId()))
+		},
+	)
 }
 
 // normalizeUserUniqueFields 把参与唯一索引的可选字段里的空串归一成 NULL。
