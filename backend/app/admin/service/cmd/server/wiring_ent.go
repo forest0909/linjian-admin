@@ -188,7 +188,7 @@ func initApp(ctx *bootstrap.Context) (*kratos.App, func(), error) {
 	auditExportService := service.NewAuditExportService(ctx, loginAuditLogRepo, operationAuditLogRepo, accessTokenChecker)
 
 	// 认证
-	authenticationService := service.NewAuthenticationService(ctx, userRepo, userCredentialRepo, roleRepo, membershipRepo, orgUnitRepo, roleOrgUnitRepo, roleFieldPermissionRepo, permissionRepo, authenticator, clientType, captcha, loginRateLimiter)
+	authenticationService := service.NewAuthenticationService(ctx, userRepo, userCredentialRepo, roleRepo, membershipRepo, orgUnitRepo, roleOrgUnitRepo, roleFieldPermissionRepo, permissionRepo, authenticator, clientType, captcha, loginRateLimiter, miniappRuntime)
 
 	// 身份与组织
 	userService := service.NewUserService(ctx, userRepo, roleRepo, userCredentialRepo, positionRepo, orgUnitRepo, membershipRepo, authenticator)
@@ -231,7 +231,7 @@ func initApp(ctx *bootstrap.Context) (*kratos.App, func(), error) {
 
 	// ── register:service ── 新模块服务在此行后注册(make register 工具锚点,勿删)
 	configService := service.NewConfigService(ctx, configRepo)
-	miniappAuthService := service.NewMiniappAuthService(ctx, miniappRuntime)
+	miniappAuthService := service.NewMiniappAuthService(ctx, miniappRuntime, authenticationService, userRepo, userCredentialRepo)
 
 	// ═══════════════════════ 五、传输层(internal/server) ═══════════════════════
 

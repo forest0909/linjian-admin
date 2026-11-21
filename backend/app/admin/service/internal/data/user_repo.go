@@ -77,6 +77,9 @@ type UserRepo interface {
 	// CountByTenantIDs 批量统计各租户下的用户数，用于回填 tenant.member_count。
 	CountByTenantIDs(ctx context.Context, tenantIDs []uint32) (map[uint32]int, error)
 
+	// FindUserIDsByMobile 小程序一键登录按已验证的手机号查用户：tenant_id = 0 AND mobile = ?。
+	FindUserIDsByMobile(ctx context.Context, mobile string) ([]uint32, error)
+
 	// FindUsernameByIdentifier 登录 identifier 智能解析：含 @ 按 email 查、
 	// 纯数字按 mobile 查，其余原样视为 username 返回（userId=0 表示未反查）。
 	// mobile 在租户内非唯一，命中多行时返回错误（数据歧义应拒绝登录而非随机取一）。
@@ -1381,6 +1384,23 @@ func isDigits(s string) bool {
 		}
 	}
 	return true
+}
+
+// FindUserIDsByMobile 按已验证的手机号查用户，条件写死：tenant_id = 0 AND mobile = ?，精确相等。
+// 小程序一键登录用：调用方没有登录身份，这里按登录的方式放行，只返回用户 ID。
+// mobile 不唯一，命中几行就返回几个，由调用方决定 0 行、多行怎么拒绝。
+func (r *userRepo) FindUserIDsByMobile(ctx context.Context, mobile string) ([]uint32, error) {
+	ids, err := r.entClient.Client().User.Query().
+		Where(
+			user.TenantIDEQ(0),
+			user.MobileEQ(mobile),
+		).
+		IDs(miniappLoginContext(ctx))
+	if err != nil {
+		r.log.Errorf(ctx, "find users by mobile failed: %s", err.Error())
+		return nil, identityV1.ErrorInternalServerError("find user by mobile failed")
+	}
+	return ids, nil
 }
 
 func (r *userRepo) ListRoleIDsByUserID(ctx context.Context, userID uint32) ([]uint32, error) {

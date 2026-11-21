@@ -45,6 +45,9 @@ var sensitiveProtoFieldNames = map[protoreflect.Name]struct{}{
 	"access_token":   {},
 	"secret":         {},
 	"token":          {},
+	// 微信 getPhoneNumber 的 code。wx.login 的 code 字段就叫 code，靠注解脱敏：
+	// 角色编码、字典编码等业务字段也叫 code，不能放进这份名单。
+	"phone_code": {},
 }
 
 // contactRedaction 联系方式在日志副本里的处理方式。

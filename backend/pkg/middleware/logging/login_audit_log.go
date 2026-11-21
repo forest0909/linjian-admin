@@ -3,6 +3,7 @@ package logging
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -42,14 +43,9 @@ func (l *LoginAuditLogMiddleware) Handle(ctx context.Context, htr *http.Transpor
 	}
 
 	// 登录与登出才进登录审计。
-	isLoginOp := false
-	for _, op := range l.op.loginOperations {
-		if htr.Operation() == op {
-			isLoginOp = true
-			break
-		}
-	}
-	if !isLoginOp && htr.Operation() != l.op.logoutOperation {
+	isLoginOp := slices.Contains(l.op.loginOperations, htr.Operation())
+	isLogoutOp := slices.Contains(l.op.logoutOperations, htr.Operation())
+	if !isLoginOp && !isLogoutOp {
 		return
 	}
 
@@ -61,7 +57,7 @@ func (l *LoginAuditLogMiddleware) Handle(ctx context.Context, htr *http.Transpor
 	switch {
 	case isLoginOp:
 		loginAuditLog.ActionType = trans.Ptr(auditV1.LoginAuditLog_LOGIN)
-	case htr.Operation() == l.op.logoutOperation:
+	case isLogoutOp:
 		loginAuditLog.ActionType = trans.Ptr(auditV1.LoginAuditLog_LOGOUT)
 	}
 

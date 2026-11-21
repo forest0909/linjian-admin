@@ -119,6 +119,9 @@ func NewRestMiddleware(
 		// 可脱离 access token 独立鉴权。页面刷新后 access token 丢失时，前端凭
 		// refresh cookie 静默恢复会话，不再强制重新登录。
 		adminV1.OperationAuthenticationServiceRefreshToken,
+		// 微信小程序的一键登录和静默续期：凭微信的 code 认证，没有 access token。
+		adminV1.OperationMiniappAuthServiceLoginByPhone,
+		adminV1.OperationMiniappAuthServiceSilentLogin,
 		//OperationFileTransferServiceDownloadFile,
 		//OperationFileTransferServicePostUploadFile,
 		//OperationFileTransferServicePutUploadFile,

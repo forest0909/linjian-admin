@@ -28,3 +28,40 @@ jobs:
       - run: go vet ./...
       # 测试全部跑 SQLite / miniredis，不依赖外部服务（PG 守卫测试只在设置 GUARD_TEST_PG_DSN 时加跑）
       - run: go test ./...
+      # 微信小程序的 mock 客户端放在 miniapp_mock 编译标签里：确认带标签也能编译，标签下的测试能过。
+      - run: go build -tags miniapp_mock ./...
+      - run: go test -tags miniapp_mock ./pkg/wechat/... ./app/admin/service/cmd/...
+
+  # 依赖真实 PostgreSQL 的并发测试：行锁、advisory lock、唯一索引冲突在 SQLite 上测不出来。
+  # 本地没设 GWA_TEST_POSTGRES_DSN 时这些测试 t.Skip，上面的 go test ./... 不受影响。
+  postgres-concurrency:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: gwatest
+          POSTGRES_DB: gwa_scratch
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Concurrency tests on PostgreSQL
+        env:
+          GWA_TEST_POSTGRES_DSN: postgres://postgres:gwatest@127.0.0.1:5432/gwa_scratch?sslmode=disable
+        run: |
+          set -o pipefail
+          go test -count=1 -p 1 -v -run 'OnPostgres' ./app/admin/service/internal/data/ | tee test.log
+          # DSN 已经设了，任何一个被跳过都算失败；一个都没跑到也算失败
+          if grep -- '--- SKIP' test.log; then echo "postgres tests were skipped"; exit 1; fi
+          grep -q -- '--- PASS: TestClaimMobile_ConcurrentUsersOnPostgres' test.log
+          grep -q -- '--- PASS: TestBindMiniapp_ConcurrentOnPostgres' test.log

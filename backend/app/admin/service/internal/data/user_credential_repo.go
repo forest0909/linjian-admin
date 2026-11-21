@@ -390,16 +390,48 @@ func (r *UserCredentialRepo) performDummyVerify(plainCredential string) {
 // needDecrypt 为 true 时，plainCredential 应为 base64+AES 加密密文，会自动解密。
 // 返回匹配到的用户 ID，调用方可据此通过 ID 查找用户。
 func (r *UserCredentialRepo) FindUserCredential(ctx context.Context, tenantID uint32, identityType authenticationV1.UserCredential_IdentityType, identifier, plainCredential string, needDecrypt bool) (uint32, error) {
+	userID, _, err := r.FindUserCredentialWithSnapshot(ctx, tenantID, identityType, identifier, plainCredential, needDecrypt)
+	return userID, err
+}
+
+// LookupCredentialUserID 只按身份类型和标识符找凭证归属的用户 ID，不校验密码。没找到返回 0。
+// 小程序密码登录用它在校验密码之前确定用户，好先读撤销版本。结果不能当作认证依据。
+func (r *UserCredentialRepo) LookupCredentialUserID(ctx context.Context, tenantID uint32, identityType authenticationV1.UserCredential_IdentityType, identifier string) (uint32, error) {
+	entities, err := r.entClient.Client().UserCredential.Query().
+		Select(usercredential.FieldUserID).
+		Where(
+			usercredential.TenantIDEQ(tenantID),
+			usercredential.IdentityTypeEQ(*r.identityTypeConverter.ToEntity(trans.Ptr(identityType))),
+			usercredential.IdentifierEQ(identifier),
+		).
+		All(ctx)
+	if err == nil {
+		var entity *ent.UserCredential
+		if entity, err = r.pickLiveCredential(ctx, entities); err == nil && entity.UserID != nil {
+			return *entity.UserID, nil
+		}
+	}
+	if err == nil || ent.IsNotFound(err) {
+		return 0, nil
+	}
+	r.log.Errorf(ctx, "lookup credential owner failed: %s", err.Error())
+	return 0, authenticationV1.ErrorServiceUnavailable("db error")
+}
+
+// FindUserCredentialWithSnapshot 同 FindUserCredential，另外返回校验时读到的凭证值（snapshot）。
+// 小程序绑定事务拿它重新确认：锁住用户行之后凭证值还是这个，说明密码在校验之后没被改过。
+// 比的是哈希值而不是更新时间：每次改密哈希都会变，不受时间精度影响。
+func (r *UserCredentialRepo) FindUserCredentialWithSnapshot(ctx context.Context, tenantID uint32, identityType authenticationV1.UserCredential_IdentityType, identifier, plainCredential string, needDecrypt bool) (uint32, string, error) {
 	if needDecrypt {
 		bytesPass, err := base64.StdEncoding.DecodeString(plainCredential)
 		if err != nil {
 			r.log.Errorf(ctx, "decode base64 credential failed: %s", err.Error())
-			return 0, authenticationV1.ErrorBadRequest("invalid credential format")
+			return 0, "", authenticationV1.ErrorBadRequest("invalid credential format")
 		}
 		decrypted, err := crypto.AesDecrypt(bytesPass, crypto.DefaultAESKey, nil)
 		if err != nil {
 			r.log.Errorf(ctx, "decrypt credential failed: %s", err.Error())
-			return 0, authenticationV1.ErrorBadRequest("decrypt credential failed")
+			return 0, "", authenticationV1.ErrorBadRequest("decrypt credential failed")
 		}
 		plainCredential = string(decrypted)
 	}
@@ -427,19 +459,19 @@ func (r *UserCredentialRepo) FindUserCredential(ctx context.Context, tenantID ui
 		// 恒定时间防护：用户不存在时也跑一次 bcrypt 校验，避免被计时攻击枚举用户名
 		r.performDummyVerify(plainCredential)
 		if ent.IsNotFound(err) {
-			return 0, authenticationV1.ErrorUserNotFound("user not found")
+			return 0, "", authenticationV1.ErrorUserNotFound("user not found")
 		}
 		r.log.Errorf(ctx, "query credential failed: %s", err.Error())
-		return 0, authenticationV1.ErrorServiceUnavailable("db error")
+		return 0, "", authenticationV1.ErrorServiceUnavailable("db error")
 	}
 
 	if entity.Status == nil || entity.CredentialType == nil || entity.Credential == nil || entity.UserID == nil {
 		r.performDummyVerify(plainCredential)
-		return 0, authenticationV1.ErrorUserNotFound("user not found")
+		return 0, "", authenticationV1.ErrorUserNotFound("user not found")
 	}
 	if *entity.Status != usercredential.StatusEnabled {
 		r.performDummyVerify(plainCredential)
-		return 0, authenticationV1.ErrorUserNotFound("user not found")
+		return 0, "", authenticationV1.ErrorUserNotFound("user not found")
 	}
 
 	if r.verifyCredential(entity.CredentialType, plainCredential, *entity.Credential) {
@@ -448,13 +480,13 @@ func (r *UserCredentialRepo) FindUserCredential(ctx context.Context, tenantID ui
 		if maxAge := r.configRepo.GetConfigInt(ctx, constants.ConfigKeyPasswordMaxAgeDays, constants.DefaultPasswordMaxAgeDays); maxAge > 0 && *entity.CredentialType == usercredential.CredentialTypePasswordHash {
 			if entity.UpdatedAt != nil && time.Since(*entity.UpdatedAt) > time.Duration(maxAge)*24*time.Hour {
 				r.log.Warnf(ctx, "password expired for user [%d] (age > %dd), login denied", *entity.UserID, maxAge)
-				return 0, authenticationV1.ErrorBadRequest("password expired, please reset your password")
+				return 0, "", authenticationV1.ErrorBadRequest("password expired, please reset your password")
 			}
 		}
-		return *entity.UserID, nil
+		return *entity.UserID, *entity.Credential, nil
 	}
 
-	return 0, authenticationV1.ErrorInvalidPassword("incorrect password")
+	return 0, "", authenticationV1.ErrorInvalidPassword("incorrect password")
 }
 
 // pickLiveCredential 从同一 (tenant, identity_type, identifier) 命中的凭证里挑出唯一一条。

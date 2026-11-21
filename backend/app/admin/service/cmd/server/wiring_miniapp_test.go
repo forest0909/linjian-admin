@@ -18,9 +18,9 @@ func TestNewMiniappRuntime_DefaultBuild(t *testing.T) {
 	boot := bootstrap.NewContextWithParam(context.Background(), nil, nil, bLogger.NopLogger())
 
 	for name, cfg := range map[string]service.MiniappConfig{
-		"mock 且没有 Secret":      {AppID: "wx1", Mock: true},
-		"mock 且有 Secret":       {AppID: "wx1", AppSecret: "s", Mock: true},
-		"mock 且没有 app_id":      {Mock: true},
+		"mock 且没有 Secret":    {AppID: "wx1", Mock: true},
+		"mock 且有 Secret":     {AppID: "wx1", AppSecret: "s", Mock: true},
+		"mock 且没有 app_id":    {Mock: true},
 		"有 app_id 没有 Secret": {AppID: "wx1"},
 	} {
 		rt, err := newMiniappRuntime(boot, cfg, nil)

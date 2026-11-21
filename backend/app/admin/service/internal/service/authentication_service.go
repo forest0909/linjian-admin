@@ -176,6 +176,9 @@ type AuthenticationService struct {
 
 	captchaClient *captcha.Captcha
 	rateLimiter   *data.LoginRateLimiter
+
+	// miniapp 微信小程序登录的配置、客户端和请求额度；未启用时为 nil，一切 app 签发都拒绝。
+	miniapp *MiniappRuntime
 }
 
 func NewAuthenticationService(
@@ -192,6 +195,7 @@ func NewAuthenticationService(
 	clientType authenticationV1.ClientType,
 	captchaClient *captcha.Captcha,
 	rateLimiter *data.LoginRateLimiter,
+	miniapp *MiniappRuntime,
 ) *AuthenticationService {
 	return &AuthenticationService{
 		log:                     ctx.NewLoggerHelper("authn/service/admin-service"),
@@ -207,6 +211,7 @@ func NewAuthenticationService(
 		clientType:              clientType,
 		captchaClient:           captchaClient,
 		rateLimiter:             rateLimiter,
+		miniapp:                 miniapp,
 	}
 }
 
@@ -221,9 +226,9 @@ func (s *AuthenticationService) resetContextForLogin(ctx context.Context) contex
 
 // Login 登录
 func (s *AuthenticationService) Login(ctx context.Context, req *authenticationV1.LoginRequest) (*authenticationV1.LoginResponse, error) {
-	// 小程序（client_type=app）登录要等微信配置（app_id）接入后才开放。
-	// 现在没有这项配置，等同于 app_id 为空：一切 app 签发都拒绝，放在验证码校验之前。
-	if req.GetClientType() == authenticationV1.ClientType_app {
+	// 小程序（client_type=app）登录：wechat.yaml 的 app_id 为空时一切 app 签发都拒绝，放在验证码校验之前。
+	// 多实例部署时先让所有实例升级到能识别 ct 的版本，再填 app_id 开启。
+	if req.GetClientType() == authenticationV1.ClientType_app && !s.miniapp.Enabled() {
 		return nil, authenticationV1.ErrorMiniappUnavailable("miniapp login is not enabled")
 	}
 
@@ -459,11 +464,32 @@ func (s *AuthenticationService) doGrantTypePassword(ctx context.Context, req *au
 		}
 	}
 
+	// ===== 小程序：确定用户后、校验密码之前先读撤销版本 =====
+	// 签发时按这个版本条件写入：读完版本之后如果改密、改号、下线完成了，版本对不上，令牌写不进去。
+	// 版本必须在认证之前读，否则「用旧密码通过校验 → 改密并吊销完成 → 读到新版本 → 签发成功」就漏了。
+	isApp := req.GetClientType() == authenticationV1.ClientType_app
+	var appRevokeVersion int64
+	var appUserID uint32
+	if isApp {
+		var lerr error
+		if appUserID, lerr = s.userCredentialRepo.LookupCredentialUserID(ctx, tenantID, authenticationV1.UserCredential_USERNAME, username); lerr != nil {
+			return nil, lerr
+		}
+		// 没找到用户时不读：后面的凭证校验会走统一的失败路径。
+		if appUserID != 0 {
+			if appRevokeVersion, lerr = s.authenticator.ReadRevokeVersion(ctx, authenticationV1.ClientType_app, appUserID); lerr != nil {
+				s.log.Errorf(ctx, "read app revoke version failed for user [%d]: %v", appUserID, lerr)
+				return nil, authenticationV1.ErrorMiniappUnavailable("miniapp login is temporarily unavailable")
+			}
+		}
+	}
+
 	// ===== 凭证校验：在租户 0 范围内查单条凭证并校验密码 =====
 	// 注意用解析后的 username 局部变量（可能是 email/mobile 反查所得），而非 req 原始输入
 	var matchedUserID uint32
+	var passwordSnapshot string
 	var err error
-	matchedUserID, err = s.userCredentialRepo.FindUserCredential(ctx, tenantID, authenticationV1.UserCredential_USERNAME, username, req.GetPassword(), true)
+	matchedUserID, passwordSnapshot, err = s.userCredentialRepo.FindUserCredentialWithSnapshot(ctx, tenantID, authenticationV1.UserCredential_USERNAME, username, req.GetPassword(), true)
 	if err != nil {
 		// 服务端日志保留真实原因（USER_NOT_FOUND / USER_FREEZE / INVALID_PASSWORD），便于运维排查
 		s.log.Errorf(ctx, "verify user credential failed for username [%s]: %s", username, err.Error())
@@ -500,6 +526,15 @@ func (s *AuthenticationService) doGrantTypePassword(ctx context.Context, req *au
 		Username: user.Username,
 		ClientId: req.ClientId,
 		DeviceId: req.DeviceId,
+	}
+
+	if isApp {
+		// 撤销版本是按校验前查到的用户读的；两次查到的不是同一个用户时不签发（用户名在这一瞬间换了主人）。
+		if matchedUserID != appUserID {
+			s.log.Errorf(ctx, "app login: credential owner changed during login ([%d] -> [%d])", appUserID, matchedUserID)
+			return nil, authenticationV1.ErrorConflict("account changed during login, please retry")
+		}
+		return s.finishAppPasswordLogin(ctx, req, user, tokenPayload, passwordSnapshot, appRevokeVersion, clientIP, username)
 	}
 
 	// 解析用户权限信息

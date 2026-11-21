@@ -24,6 +24,29 @@ func recordSessionMeta(
 	recordSessionMetaAt(ctx, log, authenticator, clientType, tokenPayload, 0)
 }
 
+// newSessionMeta 从请求上下文和令牌载荷组出会话元数据。loginAt <= 0 时取当前时间。
+// 管理端签发后单独保存它；小程序把它和 access token 放在同一个脚本里写入（TTL 取 access 有效期）。
+func newSessionMeta(ctx context.Context, tokenPayload *authenticationV1.UserTokenPayload, loginAt int64) *data.SessionMeta {
+	if loginAt <= 0 {
+		loginAt = time.Now().Unix()
+	}
+
+	// User-Agent 经 HTTP header 透传；非 HTTP 传输（如任务/SSE 内部调用）取不到时留空
+	ua := ""
+	if header := netutil.HeaderFromContext(ctx); header != nil {
+		ua = header.Get("User-Agent")
+	}
+
+	return &data.SessionMeta{
+		Username:  tokenPayload.GetUsername(),
+		TenantId:  tokenPayload.GetTenantId(),
+		Ip:        netutil.ClientIPFromContext(ctx),
+		UserAgent: ua,
+		DeviceId:  tokenPayload.GetDeviceId(),
+		LoginAt:   loginAt,
+	}
+}
+
 // recordSessionMetaAt 同 recordSessionMeta，但允许显式指定登录时间（unix 秒）。
 // 刷新轮换时传入旧会话的登录时间，使在线列表展示的"登录时间"不随刷新重置。
 func recordSessionMetaAt(
@@ -37,24 +60,7 @@ func recordSessionMetaAt(
 	if authenticator == nil || tokenPayload == nil || tokenPayload.GetJti() == "" {
 		return
 	}
-	if loginAt <= 0 {
-		loginAt = time.Now().Unix()
-	}
-
-	// User-Agent 经 HTTP header 透传；非 HTTP 传输（如任务/SSE 内部调用）取不到时留空
-	ua := ""
-	if header := netutil.HeaderFromContext(ctx); header != nil {
-		ua = header.Get("User-Agent")
-	}
-
-	meta := &data.SessionMeta{
-		Username:  tokenPayload.GetUsername(),
-		TenantId:  tokenPayload.GetTenantId(),
-		Ip:        netutil.ClientIPFromContext(ctx),
-		UserAgent: ua,
-		DeviceId:  tokenPayload.GetDeviceId(),
-		LoginAt:   loginAt,
-	}
+	meta := newSessionMeta(ctx, tokenPayload, loginAt)
 
 	err := authenticator.SaveSessionMeta(
 		ctx,

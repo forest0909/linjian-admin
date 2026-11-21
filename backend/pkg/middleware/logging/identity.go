@@ -26,6 +26,15 @@ func withIdentitySlot(ctx context.Context) (context.Context, *identitySlot) {
 	return context.WithValue(ctx, identitySlotKey{}, slot), slot
 }
 
+// SetAuditIdentity 白名单里的登录接口在认证成功后调用，把已验证的身份交给外层的登录审计。
+// 这类接口不过认证中间件，槽本来是空的；不调用的话审计按匿名记录。
+// 只在身份已经验证过（微信手机号匹配到唯一用户并签发成功）之后调用。
+func SetAuditIdentity(ctx context.Context, payload *authenticationV1.UserTokenPayload) {
+	if slot, ok := ctx.Value(identitySlotKey{}).(*identitySlot); ok && payload != nil {
+		slot.payload = payload
+	}
+}
+
 // CaptureVerifiedIdentity 必须紧跟在认证中间件之后：把 auth.FromContext 的已验签身份交给外层审计。
 func CaptureVerifiedIdentity() middleware.Middleware {
 	return func(handler middleware.Handler) middleware.Handler {

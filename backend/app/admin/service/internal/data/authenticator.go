@@ -518,6 +518,43 @@ func (a *Authenticator) CreateUserTokenGuarded(
 	return
 }
 
+// ReadRevokeVersion 读用户某客户端类型的吊销版本。小程序签发的第一步：
+// 确定用户 ID 后先读它，再做认证、绑定、算权限，最后按它条件写入（CreateAppSession）。
+func (a *Authenticator) ReadRevokeVersion(ctx context.Context, clientType authenticationV1.ClientType, userId uint32) (int64, error) {
+	return a.userTokenCache.GetRevokeVersion(ctx, clientType, userId)
+}
+
+// CreateAppSession 签发小程序会话：只有 access token，不签发、不写入 refresh token。
+// 吊销版本仍是 revokeVersion 才写入；变了返回 ErrSessionRevoked，没有令牌留下。
+// meta 和 access token 由同一个脚本写入。Redis 出错时原样返回错误。
+func (a *Authenticator) CreateAppSession(
+	ctx context.Context,
+	tokenPayload *authenticationV1.UserTokenPayload,
+	meta *SessionMeta,
+	revokeVersion int64,
+) (accessToken string, err error) {
+	if tokenPayload == nil {
+		return "", authenticationV1.ErrorBadRequest("token payload is nil")
+	}
+	const clientType = authenticationV1.ClientType_app
+
+	jti := a.newJwtId()
+	if jti == "" {
+		return "", authenticationV1.ErrorServiceUnavailable("create jwt id failed")
+	}
+	tokenPayload.Jti = trans.Ptr(jti)
+	tokenPayload.ClientType = trans.Ptr(clientType)
+
+	if accessToken, err = a.newAccessToken(clientType, tokenPayload); accessToken == "" || err != nil {
+		return "", authenticationV1.ErrorServiceUnavailable("create access token failed")
+	}
+	if err = a.userTokenCache.AddAppSession(ctx, tokenPayload.GetUserId(), jti, accessToken, meta,
+		a.GetAccessTokenExpires(clientType), revokeVersion); err != nil {
+		return "", err
+	}
+	return accessToken, nil
+}
+
 // AddTokenLineage 记录令牌代际（newJti 由 prevJti 轮换而来）。记录失败仅降级为
 // 「踢下线可能漏杀更早各代 AT」，不阻断令牌签发，调用方按日志告警即可。
 func (a *Authenticator) AddTokenLineage(

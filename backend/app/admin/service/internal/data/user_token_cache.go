@@ -203,6 +203,20 @@ var addTokenPairScript = redis.NewScript(`
 	return 1
 `)
 
+// addAppSessionScript 小程序签发：吊销版本没变才写入 access token 和会话元数据。
+// app 令牌只有 access token，没有 refresh token。两个键由同一个脚本写入，
+// 不会出现有令牌却查不到它用的是哪条绑定的情况。
+// KEYS: [atKey, usKey, rvKey]，ARGV: [at, sessionMeta, ttlMs, expectedVersion]。返回 1=已写入，0=版本已变。
+var addAppSessionScript = redis.NewScript(`
+	local ver = tonumber(redis.call('GET', KEYS[3]) or '0') or 0
+	if ver ~= tonumber(ARGV[4]) then
+		return 0
+	end
+	redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[3])
+	redis.call('SET', KEYS[2], ARGV[2], 'PX', ARGV[3])
+	return 1
+`)
+
 // ErrSessionRevoked 在途刷新期间会话已被吊销，新令牌没有写入。
 var ErrSessionRevoked = errors.New("session revoked during refresh")
 
@@ -279,6 +293,59 @@ func (r *UserTokenCache) AddTokenPairGuarded(
 	).Int64()
 	if err != nil {
 		r.log.Errorf(ctx, "add guarded token pair failed for user [%d] jti [%s]: %v", userId, jti, err)
+		return err
+	}
+	if n != 1 {
+		return ErrSessionRevoked
+	}
+	return nil
+}
+
+// GetRevokeVersion 读用户级吊销版本 rv:{ct}:{uid}，没有记录时是 0。
+// 小程序签发在认证之前读它，签发时用它做条件（见 AddAppSession）。
+func (r *UserTokenCache) GetRevokeVersion(ctx context.Context, clientType authenticationV1.ClientType, userId uint32) (int64, error) {
+	v, err := r.rdb.Get(ctx, r.makeRevokeVersionKey(clientType, userId)).Int64()
+	if errors.Is(err, redis.Nil) {
+		return 0, nil
+	}
+	if err != nil {
+		r.log.Errorf(ctx, "read revoke version failed for user [%d]: %v", userId, err)
+		return 0, err
+	}
+	return v, nil
+}
+
+// AddAppSession 写入小程序的 access token 和会话元数据，条件是吊销版本仍为 expectedVersion。
+// 版本变了（读版本之后该用户的 app 令牌被吊销过）返回 ErrSessionRevoked，什么都不写。
+// 会话元数据的 TTL 取 access token 的有效期。
+func (r *UserTokenCache) AddAppSession(
+	ctx context.Context,
+	userId uint32,
+	jti string,
+	accessToken string,
+	meta *SessionMeta,
+	expires time.Duration,
+	expectedVersion int64,
+) error {
+	if meta == nil {
+		meta = &SessionMeta{}
+	}
+	raw, err := json.Marshal(meta)
+	if err != nil {
+		r.log.Errorf(ctx, "marshal session meta failed for user [%d]: %v", userId, err)
+		return err
+	}
+	const ct = authenticationV1.ClientType_app
+	n, err := addAppSessionScript.Run(ctx, r.rdb,
+		[]string{
+			r.makeAccessTokenFieldKey(ct, userId, jti),
+			r.makeUserSessionKey(ct, userId, jti),
+			r.makeRevokeVersionKey(ct, userId),
+		},
+		accessToken, string(raw), expires.Milliseconds(), expectedVersion,
+	).Int64()
+	if err != nil {
+		r.log.Errorf(ctx, "add app session failed for user [%d] jti [%s]: %v", userId, jti, err)
 		return err
 	}
 	if n != 1 {
@@ -899,6 +966,9 @@ type SessionMeta struct {
 	DeviceId  string `json:"dev,omitempty"`
 	// LoginAt 登录时间（unix 秒）。刷新轮换继承首次登录时间，不重置。
 	LoginAt int64 `json:"loginAt"`
+	// BindingID 小程序会话所用的微信绑定行 ID（sys_user_credentials.id）。下线时按它删绑定。
+	// H5 登录和没建成绑定的登录为 0；管理端会话没有这个字段。
+	BindingID uint32 `json:"bid,omitempty"`
 }
 
 // SessionEntry 一次会话扫描得到的完整条目（键定位信息 + 元数据）。

@@ -404,3 +404,38 @@ func TestFormatArgs_MasksContacts(t *testing.T) {
 	require.Contains(t, out, "a***@example.com")
 	require.Contains(t, out, "nick", "其他字段照常记录")
 }
+
+// 微信的两个 code 和短信验证码不进访问日志。走一遍访问日志中间件，handler 拿到的请求原件不变。
+func TestAccessLogServer_RedactsWechatCodes(t *testing.T) {
+	const wxCode, phoneCode, smsCode = "wx-login-code-0a1B2c", "phone-code-9f8E7d", "482913"
+
+	cases := map[string]proto.Message{
+		"账号密码登录带 code": &authenticationV1.LoginRequest{
+			Identifier: &authenticationV1.LoginRequest_Username{Username: "zhangsan"},
+			ClientType: authenticationV1.ClientType_app.Enum(),
+			Code:       trans.Ptr(wxCode),
+		},
+		"一键登录": &authenticationV1.MiniappPhoneLoginRequest{Code: wxCode, PhoneCode: phoneCode},
+		"静默续期": &authenticationV1.MiniappSilentLoginRequest{Code: wxCode},
+		"验证改号验证码": &identityV1.VerifyContactRequest{Contact: &identityV1.VerifyContactRequest_Phone{
+			Phone: &identityV1.PhoneVerification{Phone: "13800000001", Code: smsCode},
+		}},
+	}
+	for name, req := range cases {
+		before := proto.Clone(req)
+		args, seen := runAccessLog(t, req)
+		for _, secret := range []string{wxCode, phoneCode, smsCode, "13800000001"} {
+			require.NotContains(t, args, secret, name)
+		}
+		require.True(t, proto.Equal(before, seen.(proto.Message)), "%s: handler 拿到的请求不能被改动", name)
+	}
+
+	// 其他字段照常记录。
+	args, _ := runAccessLog(t, cases["账号密码登录带 code"])
+	require.Contains(t, args, "zhangsan")
+
+	// phone_code 在字段名兜底名单里：哪怕以后有消息忘了写脱敏注解也不会漏。
+	require.True(t, sensitiveProtoField("phone_code"))
+	// code 不能进兜底名单：角色编码、字典编码等业务字段也叫 code。
+	require.False(t, sensitiveProtoField("code"))
+}

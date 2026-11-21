@@ -14,8 +14,8 @@ type options struct {
 	writeLoginLogFunc          WriteLoginLogFunc          // 写入登录审计日志函数
 	writeOperationAuditLogFunc WriteOperationAuditLogFunc // 写入操作审计日志函数
 
-	loginOperations []string // 登录操作名称集合
-	logoutOperation string   // 登出操作名称
+	loginOperations  []string // 登录操作名称集合
+	logoutOperations []string // 登出操作名称集合
 
 	ecPrivateKey *ecdsa.PrivateKey // 私钥（加密存储）
 	ecPublicKey  *ecdsa.PublicKey  // 公钥（可公开）
@@ -41,9 +41,9 @@ func WithLoginOperation(operation ...string) Option {
 	}
 }
 
-func WithLogoutOperation(operation string) Option {
+func WithLogoutOperation(operation ...string) Option {
 	return func(opts *options) {
-		opts.logoutOperation = operation
+		opts.logoutOperations = operation
 	}
 }
 

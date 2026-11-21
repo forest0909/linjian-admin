@@ -55,7 +55,7 @@ func TestOptionSetters(t *testing.T) {
 		{
 			"WithLogoutOperation",
 			WithLogoutOperation("custom-logout"),
-			func(o *options) bool { return o.logoutOperation == "custom-logout" },
+			func(o *options) bool { return len(o.logoutOperations) == 1 && o.logoutOperations[0] == "custom-logout" },
 		},
 		{
 			"WithECPrivateKey",
