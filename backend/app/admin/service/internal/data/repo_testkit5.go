@@ -189,3 +189,11 @@ func NewVCodeCacheForTest(rdb *redis.Client) *VCodeCache {
 		log: bLogger.NewHelper(bLogger.NopLogger()),
 	}
 }
+
+// NewMiniappQuotaForTest 与生产 NewMiniappQuota 逐字段一致（log 换 NopLogger）。
+func NewMiniappQuotaForTest(rdb *redis.Client) *MiniappQuota {
+	return &MiniappQuota{
+		rdb: rdb,
+		log: bLogger.NewHelper(bLogger.NopLogger()),
+	}
+}

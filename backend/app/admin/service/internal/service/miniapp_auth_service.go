@@ -20,11 +20,15 @@ type MiniappAuthService struct {
 	adminV1.MiniappAuthServiceHTTPServer
 
 	log *bLogger.Helper
+
+	// miniapp 微信配置、客户端和请求额度；未启用时为 nil。
+	miniapp *MiniappRuntime
 }
 
-func NewMiniappAuthService(ctx *bootstrap.Context) *MiniappAuthService {
+func NewMiniappAuthService(ctx *bootstrap.Context, miniapp *MiniappRuntime) *MiniappAuthService {
 	return &MiniappAuthService{
-		log: ctx.NewLoggerHelper("miniapp-auth/service/admin-service"),
+		log:     ctx.NewLoggerHelper("miniapp-auth/service/admin-service"),
+		miniapp: miniapp,
 	}
 }
 

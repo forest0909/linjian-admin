@@ -70,7 +70,7 @@ APP_RELATIVE_PATH	:= $(shell a=`basename $$PWD` && cd .. && b=`basename $$PWD` &
 SERVICE_NAME		:= $(shell a=`basename $$PWD` && cd .. && b=`basename $$PWD` && echo $$b)
 APP_NAME			:= $(shell echo $(APP_RELATIVE_PATH) | sed -En "s/\//-/p")
 
-.PHONY: build clean docker gen ent api openapi run app help
+.PHONY: build clean docker gen ent api openapi run run-miniapp-mock app help
 
 # show environment variables
 env:
@@ -98,6 +98,13 @@ build_only:
 # run application
 run: api openapi
 	go run $(GOFLAGS) -ldflags "$(LDFLAGS)" ./cmd/server -c ./configs
+
+# 本机开发：带 miniapp_mock 标签编译，微信小程序登录用 mock 客户端（不调微信）。
+# mock_openid_<串> / mock_phone_<号码> 直接通过，只能连本机的开发库和开发 Redis。
+# 正式制品（make build、Docker 镜像）不带这个标签，读到 mock 配置会拒绝启动。
+run-miniapp-mock: api openapi
+	GWA_WECHAT_MINIAPP_MOCK=true GWA_WECHAT_MINIAPP_APP_ID=$${GWA_WECHAT_MINIAPP_APP_ID:-wx-mock-appid} \
+		go run -tags miniapp_mock $(GOFLAGS) -ldflags "$(LDFLAGS)" ./cmd/server -c ./configs
 
 # build service app
 app: api openapi ent build
