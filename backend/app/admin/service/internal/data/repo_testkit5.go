@@ -181,3 +181,11 @@ func NewTokenCheckerForTest(authenticator *Authenticator) auth.AccessTokenChecke
 func (a *Authenticator) GetRefreshTokensForTest(ctx context.Context, clientType authenticationV1.ClientType, userId uint32) []string {
 	return a.userTokenCache.GetRefreshTokens(ctx, clientType, userId)
 }
+
+// NewVCodeCacheForTest 与生产 NewVCodeCache 逐字段一致（log 换 NopLogger）。
+func NewVCodeCacheForTest(rdb *redis.Client) *VCodeCache {
+	return &VCodeCache{
+		rdb: rdb,
+		log: bLogger.NewHelper(bLogger.NopLogger()),
+	}
+}

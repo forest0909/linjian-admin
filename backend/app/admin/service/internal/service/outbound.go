@@ -130,6 +130,18 @@ func (s *OutboundSender) SendMail(ctx context.Context, to, subject, body string)
 	return nil
 }
 
+// SMSConfigured 短信渠道是否配置齐全。不拨号。
+func (s *OutboundSender) SMSConfigured() bool {
+	if s == nil || s.cfg.SMS.Provider == "" {
+		return false
+	}
+	svc, err := sms.New(nil, s.cfg.SMS)
+	if err != nil {
+		return false
+	}
+	return svc.Precheck() == nil
+}
+
 // SendSMS 发一条验证码短信。provider 留空，或必填项不全时返回 ErrOutboundNotConfigured。
 func (s *OutboundSender) SendSMS(ctx context.Context, phone, code string) error {
 	if s == nil || s.cfg.SMS.Provider == "" {

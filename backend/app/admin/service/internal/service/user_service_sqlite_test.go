@@ -79,6 +79,7 @@ type userServiceUserRepoStub struct {
 	roleIDsByUser    map[uint32][]uint32
 	listRoleIDsErr   error
 	listRoleIDsCalls int
+	updateOutcome    data.UserUpdateOutcome
 }
 
 func (s *userServiceUserRepoStub) Get(_ context.Context, req *identityV1.GetUserRequest) (*identityV1.User, error) {
@@ -117,6 +118,12 @@ func (s *userServiceUserRepoStub) CreateWithTx(_ context.Context, _ *ent.Tx, dat
 func (s *userServiceUserRepoStub) Update(_ context.Context, req *identityV1.UpdateUserRequest) error {
 	s.updates = append(s.updates, req)
 	return nil
+}
+
+// UpdateGuarded 桩不落库，也不判断号码是否变更：只记录调用，回放 updateOutcome。
+func (s *userServiceUserRepoStub) UpdateGuarded(_ context.Context, req *identityV1.UpdateUserRequest, _ data.MobileChangeGuard) (data.UserUpdateOutcome, error) {
+	s.updates = append(s.updates, req)
+	return s.updateOutcome, nil
 }
 
 func (s *userServiceUserRepoStub) Delete(_ context.Context, req *identityV1.DeleteUserRequest) error {

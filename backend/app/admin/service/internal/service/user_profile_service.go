@@ -28,8 +28,10 @@ import (
 
 // profileEditableFields 个人资料页可以自行修改的字段（与 BaseSetting 表单一致）。
 // 键为去掉下划线后的小写形式，兼容 snake_case 与 camelCase 两种 mask 写法。
+// mobile 不在里面：手机号是登录凭证（小程序一键登录认它），自助改号只能走短信验证码
+// （BindContact → VerifyContact）。
 var profileEditableFields = map[string]struct{}{
-	"id": {}, "nickname": {}, "realname": {}, "email": {}, "mobile": {}, "telephone": {},
+	"id": {}, "nickname": {}, "realname": {}, "email": {}, "telephone": {},
 	"gender": {}, "region": {}, "address": {}, "description": {}, "locale": {}, "avatar": {},
 }
 
@@ -60,7 +62,7 @@ type UserProfileService struct {
 	roleRepo           *data.RoleRepo
 	userCredentialRepo *data.UserCredentialRepo
 	authenticator      *data.Authenticator
-	outbound           *OutboundSender
+	outbound           contactSender
 	vcodeCache         *data.VCodeCache
 	storage            oss.Storage
 	// legacyAvatarHost 旧版头像地址的前缀（MinIO 的 download_host），只用来认出旧头像以便删除。
@@ -139,7 +141,12 @@ func (s *UserProfileService) UpdateUser(ctx context.Context, req *identityV1.Upd
 	req.Id = operator.UserId
 	// 个人资料只允许改资料字段。userRepo.Update 会按 mask 写角色、组织、岗位、状态等，
 	// 不收窄的话任何登录用户都能把自己的 roleIds 改成管理员角色。
-	req.UpdateMask = &field_mask.FieldMask{Paths: profileUpdatablePaths(req.GetUpdateMask().GetPaths())}
+	paths := profileUpdatablePaths(req.GetUpdateMask().GetPaths())
+	if len(paths) == 0 {
+		// 请求的字段没有一个可以自助修改。不能把空 mask 交给仓储：空 mask 在那里是全量更新。
+		return &emptypb.Empty{}, nil
+	}
+	req.UpdateMask = &field_mask.FieldMask{Paths: paths}
 
 	if err = s.userRepo.Update(ctx, req); err != nil {
 		return nil, err

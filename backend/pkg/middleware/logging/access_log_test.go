@@ -347,3 +347,22 @@ func newNestedPasswordMessage(t *testing.T) proto.Message {
 	tokens.Append(protoreflect.ValueOfString("repeated-token-9f3a"))
 	return outer
 }
+
+// 改手机号、改邮箱的验证码不进访问日志；请求原件不被改动。
+func TestFormatArgs_RedactsContactVerificationCode(t *testing.T) {
+	const smsCode, mailCode = "482913", "775201"
+
+	phoneReq := &identityV1.VerifyContactRequest{Contact: &identityV1.VerifyContactRequest_Phone{
+		Phone: &identityV1.PhoneVerification{Phone: "13800000001", Code: smsCode},
+	}}
+	out := FormatArgs(phoneReq)
+	require.NotContains(t, out, smsCode)
+	require.Equal(t, smsCode, phoneReq.GetPhone().GetCode(), "脱敏在克隆上做，不能改请求原件")
+
+	emailReq := &identityV1.VerifyContactRequest{Contact: &identityV1.VerifyContactRequest_Email{
+		Email: &identityV1.EmailVerification{Email: "a@example.com", Code: mailCode},
+	}}
+	out = FormatArgs(emailReq)
+	require.NotContains(t, out, mailCode)
+	require.Equal(t, mailCode, emailReq.GetEmail().GetCode())
+}

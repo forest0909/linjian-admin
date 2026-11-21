@@ -45,6 +45,9 @@ type UserRepo interface {
 	BeginTx(ctx context.Context) (*ent.Tx, error)
 
 	Update(ctx context.Context, req *identityV1.UpdateUserRequest) error
+	// UpdateGuarded 同 Update，另外把手机号当登录凭证处理：号码确实要变时在事务里、
+	// 写入之前回调 guard（返回错误则整个更新回滚），并返回这次更新里手机号的实际去向。
+	UpdateGuarded(ctx context.Context, req *identityV1.UpdateUserRequest, guard MobileChangeGuard) (UserUpdateOutcome, error)
 
 	Delete(ctx context.Context, req *identityV1.DeleteUserRequest) error
 
@@ -646,12 +649,18 @@ func (r *userRepo) CreateWithTx(ctx context.Context, tx *ent.Tx, data *identityV
 }
 
 // Update 更新用户
-func (r *userRepo) Update(ctx context.Context, req *identityV1.UpdateUserRequest) (err error) {
+func (r *userRepo) Update(ctx context.Context, req *identityV1.UpdateUserRequest) error {
+	_, err := r.UpdateGuarded(ctx, req, nil)
+	return err
+}
+
+// UpdateGuarded 更新用户；手机号的变更检查见 guardMobileWrite。
+func (r *userRepo) UpdateGuarded(ctx context.Context, req *identityV1.UpdateUserRequest, guard MobileChangeGuard) (outcome UserUpdateOutcome, err error) {
 	if req == nil || req.Data == nil {
-		return identityV1.ErrorBadRequest("invalid parameter")
+		return outcome, identityV1.ErrorBadRequest("invalid parameter")
 	}
 	if req.GetId() == 0 {
-		return identityV1.ErrorBadRequest("id is required")
+		return outcome, identityV1.ErrorBadRequest("id is required")
 	}
 
 	// 如果不存在则创建
@@ -661,14 +670,14 @@ func (r *userRepo) Update(ctx context.Context, req *identityV1.UpdateUserRequest
 			QueryBy: &identityV1.UserExistsRequest_Id{Id: req.GetId()},
 		})
 		if err != nil {
-			return err
+			return outcome, err
 		}
 		if !existResp.Exist {
 			createReq := &identityV1.CreateUserRequest{Data: req.Data}
 			createReq.Data.CreatedBy = createReq.Data.UpdatedBy
 			createReq.Data.UpdatedBy = nil
 			_, err = r.Create(ctx, createReq)
-			return err
+			return outcome, err
 		}
 	}
 
@@ -676,7 +685,7 @@ func (r *userRepo) Update(ctx context.Context, req *identityV1.UpdateUserRequest
 	tx, err = r.entClient.Client().Tx(ctx)
 	if err != nil {
 		r.log.Errorf(ctx, "start transaction failed: %s", err.Error())
-		return identityV1.ErrorInternalServerError("start transaction failed")
+		return outcome, identityV1.ErrorInternalServerError("start transaction failed")
 	}
 	var txCommitted bool
 	defer finishEntTx(tx, &txCommitted, func(rollbackErr error) {
@@ -766,6 +775,11 @@ func (r *userRepo) Update(ctx context.Context, req *identityV1.UpdateUserRequest
 		req.GetUpdateMask().Paths = sliceutil.FilterBlacklist(req.GetUpdateMask().Paths, []string{"mobile"})
 	}
 
+	// 手机号是登录凭证：号码确实要变时先过 guard，再写任何东西。
+	if outcome, err = r.guardMobileWrite(ctx, tx, req, guard); err != nil {
+		return outcome, err
+	}
+
 	var entity *identityV1.User
 	builder := tx.User.UpdateOneID(req.GetId())
 	entity, err = r.repository.UpdateOne(ctx, builder, req.Data, req.GetUpdateMask(),
@@ -797,7 +811,7 @@ func (r *userRepo) Update(ctx context.Context, req *identityV1.UpdateUserRequest
 	// 用户行没更新成功就不能再动关联：以前这里不查 err，紧接着被 assignUserRelations 的结果覆盖，
 	// 用户不存在 / 唯一冲突时照样按 tenant_id=0 重写关联并提交，接口回 200。
 	if err != nil {
-		return mapUserWriteError(r.log, ctx, "update user", err)
+		return outcome, mapUserWriteError(r.log, ctx, "update user", err)
 	}
 
 	switch constants.DefaultUserTenantRelationType {
@@ -808,7 +822,7 @@ func (r *userRepo) Update(ctx context.Context, req *identityV1.UpdateUserRequest
 			roleIds,
 			orgUnitIds,
 			positionIds); err != nil {
-			return err
+			return outcome, err
 		}
 	case constants.UserTenantRelationOneToMany:
 		if err = r.assignMembershipRelations(ctx, tx,
@@ -817,15 +831,15 @@ func (r *userRepo) Update(ctx context.Context, req *identityV1.UpdateUserRequest
 			roleIds,
 			orgUnitIds,
 			positionIds); err != nil {
-			return err
+			return outcome, err
 		}
 	}
 
 	if commitErr := commitEntTx(tx, &txCommitted); commitErr != nil {
 		r.log.Errorf(ctx, "transaction commit failed: %s", commitErr.Error())
-		return identityV1.ErrorInternalServerError("transaction commit failed")
+		return outcome, identityV1.ErrorInternalServerError("transaction commit failed")
 	}
-	return nil
+	return outcome, nil
 }
 
 // normalizeUserUniqueFields 把参与唯一索引的可选字段里的空串归一成 NULL。

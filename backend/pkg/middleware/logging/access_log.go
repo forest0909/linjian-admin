@@ -131,9 +131,14 @@ func sensitiveProtoField(name protoreflect.Name) bool {
 }
 
 // redactSensitiveStrings 递归清空敏感 string 字段，覆盖嵌套消息、repeated 和 map 的值。
+// 每一层嵌套消息还会调它自己生成的 Redact()：生成的 Redact() 不会下钻 oneof 里的消息
+// （例如 VerifyContactRequest.phone / .email），只靠顶层那一次调用，里面带注解的验证码会漏进日志。
 func redactSensitiveStrings(m protoreflect.Message) {
 	if !m.IsValid() {
 		return
+	}
+	if redacter, ok := m.Interface().(inPlaceRedacter); ok {
+		redacter.Redact()
 	}
 	var clear []protoreflect.FieldDescriptor
 	m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
