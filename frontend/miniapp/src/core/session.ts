@@ -13,6 +13,7 @@ import { isRenewRejected, TEXT_SESSION_EXPIRED } from './errors'
 
 export const LOGIN_PAGE = '/pages/login/index'
 export const HOME_PAGE = '/pages/home/index'
+export const MINE_PAGE = '/pages/mine/index'
 
 const STORAGE_KEY = 'linjian.miniapp.session'
 
@@ -84,6 +85,12 @@ export function isBound(): boolean {
 export function isCurrent(snap: SessionSnapshot): boolean {
   const cur = snapshot()
   return cur.token !== null && cur.loginId === snap.loginId && cur.token === snap.token
+}
+
+/** 这个快照是不是还属于当前这次登录。期间续期换过令牌也算同一次登录。 */
+export function isSameLogin(snap: SessionSnapshot): boolean {
+  const cur = snapshot()
+  return cur.token !== null && cur.loginId === snap.loginId
 }
 
 /** 登录成功：开始一次新的登录。 */

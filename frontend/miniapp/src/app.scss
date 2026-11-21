@@ -1,5 +1,16 @@
+// 主色和管理端一致（docs/design-language.md）。
+page,
+:root {
+  --nutui-color-primary: #006be6;
+  --nutui-color-primary-stop-1: #006be6;
+  --nutui-color-primary-stop-2: #006be6;
+  --nutui-color-primary-pressed: #0058bf;
+  --nutui-color-primary-text: #ffffff;
+}
+
+// 页面底色写在各页面的根节点上（H5 下 page 选择器不生效）。
 page {
-  background-color: #f5f6f8;
   color: #1f2329;
   font-size: 28px;
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif;
 }

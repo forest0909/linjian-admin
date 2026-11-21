@@ -1,10 +1,51 @@
 .home {
+  min-height: 100vh;
   padding: 32px;
+  box-sizing: border-box;
+  background: #f5f6f8;
 
-  &__title {
+  &__hello {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 24px 8px 40px;
+  }
+
+  &__hello-text {
+    flex: 1;
+  }
+
+  &__greeting {
     display: block;
-    margin-bottom: 24px;
-    font-size: 40px;
+    font-size: 44px;
     font-weight: 600;
+    line-height: 1.4;
+  }
+
+  &__sub {
+    display: block;
+    margin-top: 8px;
+    color: #8a9099;
+    font-size: 26px;
+  }
+
+  &__card {
+    padding: 32px;
+    border-radius: 16px;
+    background: #ffffff;
+  }
+
+  &__card-title {
+    display: block;
+    font-size: 30px;
+    font-weight: 500;
+  }
+
+  &__card-text {
+    display: block;
+    margin-top: 12px;
+    color: #646a73;
+    font-size: 26px;
+    line-height: 1.6;
   }
 }

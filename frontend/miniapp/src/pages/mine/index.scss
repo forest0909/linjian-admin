@@ -1,0 +1,61 @@
+.mine {
+  min-height: 100vh;
+  padding: 32px;
+  box-sizing: border-box;
+  background: #f5f6f8;
+
+  &__header {
+    display: flex;
+    align-items: center;
+    padding: 32px;
+    border-radius: 16px;
+    background: #ffffff;
+  }
+
+  &__header-text {
+    display: flex;
+    flex-direction: column;
+    margin-left: 28px;
+  }
+
+  &__name {
+    font-size: 36px;
+    font-weight: 600;
+  }
+
+  &__tip {
+    margin-top: 8px;
+    color: #8a9099;
+    font-size: 24px;
+  }
+
+  &__group {
+    margin-top: 24px;
+  }
+
+  &__logout {
+    margin-top: 56px;
+  }
+
+  &__pwd {
+    padding: 16px 40px 56px;
+  }
+
+  &__field {
+    margin-bottom: 24px;
+    padding: 0 8px;
+    border-radius: 16px;
+    background: #f5f6f8;
+
+    .nut-input {
+      background: transparent;
+    }
+  }
+
+  &__pwd-tip {
+    display: block;
+    margin: 8px 0 32px;
+    color: #8a9099;
+    font-size: 24px;
+  }
+}
