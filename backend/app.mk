@@ -87,12 +87,23 @@ env:
 	echo "LAST_TAG: $(LAST_TAG)"
 	echo "VERSION: $(VERSION)"
 
+# 正式打包入口（build、build_only）拒绝 miniapp_mock 编译标签：带这个标签的制品里是微信登录的 mock 实现。
+# 标签可能从三处进来：make 的 GOFLAGS 变量、环境变量 GOFLAGS、go env -w 写下的 GOFLAGS。
+# 这里问 go 工具本身「这次构建实际生效的标签」，三处都覆盖。只在这两个目标的配方里展开，
+# 开发用的 run-miniapp-mock 不受影响。
+RELEASE_BUILD_TAGS = $(shell go list $(GOFLAGS) -f "{{context.BuildTags}}" ./cmd/server)
+define reject_mock_tag
+$(if $(findstring miniapp_mock,$(RELEASE_BUILD_TAGS)),$(error miniapp_mock build tag is active (check GOFLAGS); refusing to build a release artifact with the mock WeChat client))
+endef
+
 # build golang application
 build: api openapi
+	$(reject_mock_tag)
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o ./bin/ ./...
 
 # build golang application only
 build_only:
+	$(reject_mock_tag)
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o ./bin/ ./...
 
 # run application

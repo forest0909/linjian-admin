@@ -28,7 +28,9 @@ import (
 
 	"go-wind-admin/pkg/constants"
 	"go-wind-admin/pkg/middleware/auth"
+	"go-wind-admin/pkg/middleware/logging"
 	"go-wind-admin/pkg/netutil"
+	"go-wind-admin/pkg/phone"
 )
 
 // 验证码相关请求头（H5：登录强制验证码，通过 header 传递以避免改动 proto 与三套前端生成代码）。
@@ -452,6 +454,10 @@ func (s *AuthenticationService) doGrantTypePassword(ctx context.Context, req *au
 	} else if resolved != username {
 		username = resolved
 	}
+	// 日志和登录审计里的登录标识：手机号匹配到账号时是真实用户名；没匹配到时是原始输入，
+	// 可能就是一个手机号，打码后再用。审计用户名走 ctx 交给审计中间件，不经过响应。
+	logUsername := phone.MaskIfMobile(username)
+	logging.SetAuditUsername(ctx, logUsername)
 
 	// ===== H5 闸门 1：登录限流预检（按 IP + 解析后的用户名双维度）=====
 	// 必须用解析后的 username：失败计数按它累计，用 email/手机号登录不能绕过账号锁定。
@@ -459,7 +465,7 @@ func (s *AuthenticationService) doGrantTypePassword(ctx context.Context, req *au
 		if locked, lerr := s.rateLimiter.IsLocked(ctx, clientIP, username); lerr != nil {
 			s.log.Errorf(ctx, "login rate limiter pre-check failed: %s", lerr.Error())
 		} else if locked {
-			s.log.Warnf(ctx, "login blocked by rate limiter: ip=%s, username=%s", clientIP, username)
+			s.log.Warnf(ctx, "login blocked by rate limiter: ip=%s, username=%s", clientIP, logUsername)
 			return nil, authenticationV1.ErrorTooManyRequests("too many login failures, please try again later")
 		}
 	}
@@ -492,7 +498,7 @@ func (s *AuthenticationService) doGrantTypePassword(ctx context.Context, req *au
 	matchedUserID, passwordSnapshot, err = s.userCredentialRepo.FindUserCredentialWithSnapshot(ctx, tenantID, authenticationV1.UserCredential_USERNAME, username, req.GetPassword(), true)
 	if err != nil {
 		// 服务端日志保留真实原因（USER_NOT_FOUND / USER_FREEZE / INVALID_PASSWORD），便于运维排查
-		s.log.Errorf(ctx, "verify user credential failed for username [%s]: %s", username, err.Error())
+		s.log.Errorf(ctx, "verify user credential failed for username [%s]: %s", logUsername, err.Error())
 
 		// H5：登录失败时自增失败计数（按 IP + 用户名双维度）
 		if s.rateLimiter != nil {

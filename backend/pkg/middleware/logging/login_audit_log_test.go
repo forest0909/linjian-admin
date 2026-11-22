@@ -86,8 +86,8 @@ func TestLoginAuditLogHandleLoginOpWithToken(t *testing.T) {
 	assert.Equal(t, auditV1.LoginAuditLog_SUCCESS, rec.GetStatus())
 	assert.Empty(t, rec.GetFailureReason())
 
-	// 用户名来源优先级：请求体优先于令牌。
-	assert.Equal(t, "bob", rec.GetUsername(), "Username ← 请求体（优先于令牌 sub）")
+	// 用户名来源优先级：已验证的身份优先于请求体（请求体是调用方随便写的）。
+	assert.Equal(t, "alice", rec.GetUsername(), "Username ← 已验证身份（优先于请求体）")
 	// 令牌身份映射。
 	assert.Equal(t, uint32(42), rec.GetUserId())
 	assert.Equal(t, uint32(7), rec.GetTenantId())

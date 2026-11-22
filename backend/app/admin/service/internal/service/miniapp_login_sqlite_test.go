@@ -423,14 +423,14 @@ func TestMiniappLogin_RevokedBeforeIssue(t *testing.T) {
 	version, err := e.authenticator.ReadRevokeVersion(context.Background(), authenticationV1.ClientType_app, uid)
 	require.NoError(t, err)
 	revoke()
-	_, err = e.authn.issueAppSession(e.reqCtx("10.0.0.1"), &authenticationV1.UserTokenPayload{UserId: uid}, 0, version)
+	_, err = e.authn.issueAppSession(e.reqCtx("10.0.0.1"), &authenticationV1.UserTokenPayload{UserId: uid}, 0, version, nil)
 	requireReason(t, err, 409, "CONFLICT")
 	require.Empty(t, e.appTokens(uid))
 
 	// 版本没变时写得进去。
 	version, err = e.authenticator.ReadRevokeVersion(context.Background(), authenticationV1.ClientType_app, uid)
 	require.NoError(t, err)
-	token, err := e.authn.issueAppSession(e.reqCtx("10.0.0.1"), &authenticationV1.UserTokenPayload{UserId: uid}, 0, version)
+	token, err := e.authn.issueAppSession(e.reqCtx("10.0.0.1"), &authenticationV1.UserTokenPayload{UserId: uid}, 0, version, nil)
 	require.NoError(t, err)
 	require.True(t, e.tokenValid(token))
 }

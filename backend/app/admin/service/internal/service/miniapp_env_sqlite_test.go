@@ -231,7 +231,7 @@ func newMiniappEnv(t *testing.T) *miniappEnv {
 		sender: sender,
 		seed:   &authSvcEnv{svc: authn, entClient: entClient, mr: mr, captchaClient: captchaClient, ctx: sys},
 	}
-	e.revoker = &BindingRevoker{log: logger, userCredentialRepo: credRepo, authenticator: authenticator}
+	e.revoker = &BindingRevoker{log: logger, userCredentialRepo: credRepo, authenticator: authenticator, userRepo: userRepo, roleRepo: roleRepo}
 	e.online = &OnlineSessionService{log: logger, authenticator: authenticator, revoker: e.revoker}
 	e.mini = newMiniappAuthServiceForTest(e, logger, runtime)
 	// 记下每次全量吊销的客户端类型：只吊销 app 令牌时管理端的 SSE 连接不该被断开（钩子按类型断流）。

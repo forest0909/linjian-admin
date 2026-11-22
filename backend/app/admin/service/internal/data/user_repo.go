@@ -32,6 +32,7 @@ import (
 	permissionV1 "go-wind-admin/api/gen/go/permission/service/v1"
 
 	"go-wind-admin/pkg/constants"
+	"go-wind-admin/pkg/phone"
 )
 
 type UserRepo interface {
@@ -1364,7 +1365,7 @@ func (r *userRepo) FindUsernameByIdentifier(ctx context.Context, tenantID uint32
 		case 1:
 			return *entities[0].Username, entities[0].ID, nil
 		default:
-			r.log.Errorf(ctx, "ambiguous mobile login: tenant=%d mobile=%s rows=%d", tenantID, identifier, len(entities))
+			r.log.Errorf(ctx, "ambiguous mobile login: tenant=%d mobile=%s rows=%d", tenantID, phone.Mask(identifier), len(entities))
 			return "", 0, identityV1.ErrorInternalServerError("ambiguous account identifier")
 		}
 

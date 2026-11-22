@@ -263,6 +263,9 @@ func (r *UserCredentialRepo) BindVerifiedPhone(ctx context.Context, userID uint3
 // 授权读取和密码写入在同一把锁下，中间不会被并发的角色变更插进来。check 返回错误则什么都不写。
 func (r *UserCredentialRepo) ResetCredentialGuarded(ctx context.Context, userID uint32, req *authenticationV1.ResetCredentialRequest,
 	check func(ctx context.Context, tx *ent.Tx, roleIDs []uint32) error) error {
+	// 口令策略在开事务之前读好：事务里不再用别的连接查 sys_config。
+	ctx = r.PreloadPasswordPolicy(ctx)
+
 	tx, err := r.entClient.Client().Tx(ctx)
 	if err != nil {
 		r.log.Errorf(ctx, "start transaction failed: %s", err.Error())

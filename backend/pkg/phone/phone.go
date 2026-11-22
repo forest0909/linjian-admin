@@ -31,6 +31,15 @@ func Mask(mobile string) string {
 	return s[:3] + "****" + s[len(s)-4:]
 }
 
+// MaskIfMobile 登录标识（用户名、邮箱或手机号）进日志和审计之前用：是手机号就打码，否则原样返回。
+// 登录框允许拿手机号当用户名，这个值不能原样落进日志。
+func MaskIfMobile(identifier string) string {
+	if _, ok := NormalizeCNMobile(identifier); ok {
+		return Mask(identifier)
+	}
+	return identifier
+}
+
 // MaskEmail 日志用的邮箱打码：本地部分只留首字符（a***@example.com）。
 func MaskEmail(email string) string {
 	s := strings.TrimSpace(email)

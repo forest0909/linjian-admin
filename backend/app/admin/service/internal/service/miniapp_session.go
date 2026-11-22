@@ -36,16 +36,29 @@ func maskOpenID(openid string) string {
 
 // issueAppSession 按撤销版本条件写入 app 令牌和会话元数据。bindingID 是这次会话所用的绑定行，
 // H5 登录和没建成绑定的登录为 0。只有 access token：不签发 refresh token，不设 Cookie。
+//
+// 写入在用户行锁下做，并在锁内重新确认会话的依据还在（guard：绑定行、密码凭证值）。
+// 撤销版本靠 Redis 的 INCR 推进：解绑或改密的数据库部分已提交而 INCR 失败时，版本条件拦不住在途的签发；
+// 删绑定和改凭证的事务都先锁同一行，锁内复核能拦住。依据已经不在时返回 CONFLICT，什么都不写。
 func (s *AuthenticationService) issueAppSession(ctx context.Context, tokenPayload *authenticationV1.UserTokenPayload,
-	bindingID uint32, revokeVersion int64) (string, error) {
+	bindingID uint32, revokeVersion int64, passwordSnapshot *string) (string, error) {
 	meta := newSessionMeta(ctx, tokenPayload, 0)
 	meta.BindingID = bindingID
 
-	accessToken, err := s.authenticator.CreateAppSession(ctx, tokenPayload, meta, revokeVersion)
+	var accessToken string
+	err := s.userCredentialRepo.IssueUnderUserLock(ctx, tokenPayload.GetUserId(),
+		data.MiniappIssueGuard{BindingID: bindingID, PasswordSnapshot: passwordSnapshot},
+		func() (ierr error) {
+			accessToken, ierr = s.authenticator.CreateAppSession(ctx, tokenPayload, meta, revokeVersion)
+			return ierr
+		})
 	if err != nil {
-		if errors.Is(err, data.ErrSessionRevoked) {
-			s.log.Warnf(ctx, "app session of user [%d] revoked during login, token discarded", tokenPayload.GetUserId())
+		switch {
+		case errors.Is(err, data.ErrSessionRevoked), errors.Is(err, data.ErrMiniappBindingGone), errors.Is(err, data.ErrMiniappBindStale):
+			s.log.Warnf(ctx, "app session of user [%d] revoked during login, token discarded: %v", tokenPayload.GetUserId(), err)
 			return "", authenticationV1.ErrorConflict("session was revoked during login, please retry")
+		case errors.Is(err, data.ErrMiniappUserDisabled):
+			return "", authenticationV1.ErrorForbidden("user is disabled")
 		}
 		s.log.Errorf(ctx, "write app session failed for user [%d]: %v", tokenPayload.GetUserId(), err)
 		return "", authenticationV1.ErrorMiniappUnavailable("miniapp login is temporarily unavailable")
@@ -83,7 +96,7 @@ func (s *AuthenticationService) finishAppPasswordLogin(ctx context.Context, req 
 		return nil, err
 	}
 
-	accessToken, err := s.issueAppSession(ctx, tokenPayload, bindingID, revokeVersion)
+	accessToken, err := s.issueAppSession(ctx, tokenPayload, bindingID, revokeVersion, &passwordSnapshot)
 	if err != nil {
 		return nil, err
 	}

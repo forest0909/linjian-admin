@@ -13,8 +13,11 @@ import (
 	"go-wind-admin/third_party/go-utils/timeutil"
 	"go-wind-admin/third_party/go-utils/trans"
 
+	adminV1 "go-wind-admin/api/gen/go/admin/service/v1"
 	auditV1 "go-wind-admin/api/gen/go/audit/service/v1"
 	authenticationV1 "go-wind-admin/api/gen/go/authentication/service/v1"
+
+	"go-wind-admin/pkg/phone"
 
 	"go-wind-admin/third_party/go-crud/viewer"
 )
@@ -61,7 +64,7 @@ func (l *LoginAuditLogMiddleware) Handle(ctx context.Context, htr *http.Transpor
 		loginAuditLog.ActionType = trans.Ptr(auditV1.LoginAuditLog_LOGOUT)
 	}
 
-	// 请求体不含 username 时，handler 可以经响应头回传用户名。
+	// handler 可以经响应头回传用户名（响应头客户端看得到，只适合认证成功之后用）。
 	auditUsername := htr.ReplyHeader().Get("X-Audit-Username")
 
 	clientIp := auditutil.ClientRealIP(htr.Request())
@@ -71,21 +74,30 @@ func (l *LoginAuditLogMiddleware) Handle(ctx context.Context, htr *http.Transpor
 
 	loginAuditLog.GeoLocation = fillGeoLocation(clientIp)
 
-	if username, _ := auditutil.ExtractUsernameFromRequest(htr.Request()); username != "" {
-		loginAuditLog.Username = trans.Ptr(username)
-	}
-
+	// 用户名的来源，按可信程度从高到低，取第一个有值的：
+	//  1. 已验证的身份（令牌，或登录接口认证成功后交来的身份）；
+	//  2. 登录接口在服务端交来的用户名（SetAuditUsername，或响应头 X-Audit-Username）；
+	//  3. 请求体里的 username——只有账号密码登录认它，而且是手机号就打码。
+	// 请求体是调用方随便写的：一键登录、退出的请求里本来没有 username 字段，多塞一个不能盖过真实身份，
+	// 也不能让匿名失败的记录带上任意用户名；这些接口没有身份时用户名留空。
 	if ut != nil {
 		loginAuditLog.UserId = trans.Ptr(ut.UserId)
 		loginAuditLog.TenantId = ut.TenantId
-		if loginAuditLog.Username == nil {
+		if ut.GetUsername() != "" {
 			loginAuditLog.Username = ut.Username
 		}
 	}
-
-	// 请求体和令牌都没有用户名时，用响应头回传的用户名兜底。
-	if loginAuditLog.Username == nil && auditUsername != "" {
-		loginAuditLog.Username = trans.Ptr(auditUsername)
+	if loginAuditLog.Username == nil {
+		if username := auditUsernameFromContext(ctx); username != "" {
+			loginAuditLog.Username = trans.Ptr(username)
+		} else if auditUsername != "" {
+			loginAuditLog.Username = trans.Ptr(auditUsername)
+		}
+	}
+	if loginAuditLog.Username == nil && htr.Operation() == adminV1.OperationAuthenticationServiceLogin {
+		if username, _ := auditutil.ExtractUsernameFromRequest(htr.Request()); username != "" {
+			loginAuditLog.Username = trans.Ptr(phone.MaskIfMobile(username))
+		}
 	}
 
 	// 用户设备信息

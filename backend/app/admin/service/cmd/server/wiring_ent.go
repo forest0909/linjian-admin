@@ -188,7 +188,7 @@ func initApp(ctx *bootstrap.Context) (*kratos.App, func(), error) {
 	auditExportService := service.NewAuditExportService(ctx, loginAuditLogRepo, operationAuditLogRepo, accessTokenChecker)
 
 	// 小程序统一的下线函数：小程序退出、在线会话踢下线、管理端解绑共用
-	bindingRevoker := service.NewBindingRevoker(ctx, userCredentialRepo, authenticator)
+	bindingRevoker := service.NewBindingRevoker(ctx, userCredentialRepo, authenticator, userRepo, roleRepo)
 
 	// 认证
 	authenticationService := service.NewAuthenticationService(ctx, userRepo, userCredentialRepo, roleRepo, membershipRepo, orgUnitRepo, roleOrgUnitRepo, roleFieldPermissionRepo, permissionRepo, authenticator, clientType, captcha, loginRateLimiter, miniappRuntime)

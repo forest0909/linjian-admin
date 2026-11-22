@@ -575,7 +575,7 @@ func (r *UserCredentialRepo) prepareCredential(ctx context.Context, credentialTy
 		// 等保口令策略：哈希前对明文做复杂度校验（覆盖创建/修改/重置全部路径）。
 		// 长度阈值自 sys_config 平台参数读取（参数管理页可调）。
 		if err := password.ValidateComplexity(plainCredential,
-			r.configRepo.GetConfigInt(ctx, constants.ConfigKeyPasswordMinLen, constants.DefaultPasswordMinLen)); err != nil {
+			r.passwordMinLen(ctx)); err != nil {
 			return "", authenticationV1.ErrorBadRequest("%s", err.Error())
 		}
 		var err error
@@ -627,6 +627,9 @@ func (r *UserCredentialRepo) ChangeCredential(ctx context.Context, userID uint32
 		}
 		req.NewCredential = string(newPlain)
 	}
+
+	// 口令策略在开事务之前读好：事务里不再用别的连接查 sys_config。
+	ctx = r.PreloadPasswordPolicy(ctx)
 
 	// 改密和删微信绑定在同一个事务里，先锁用户行：和小程序的绑定事务对同一个用户串行。
 	// 绑定事务要么在改密之前提交（随后在这里被删掉），要么在之后开始（重新确认时发现密码已变，不写）。
@@ -700,7 +703,7 @@ func (r *UserCredentialRepo) ChangeCredential(ctx context.Context, userID uint32
 	}
 
 	extraInfo := appendPasswordHistory(entity.ExtraInfo, *entity.Credential,
-		r.configRepo.GetConfigInt(ctx, constants.ConfigKeyPasswordHistoryCount, constants.DefaultPasswordHistoryCount))
+		r.passwordHistoryCount(ctx))
 
 	builder := client.UserCredential.Update()
 	builder.Where(tenantWhere...)
@@ -802,7 +805,7 @@ func (r *UserCredentialRepo) resetCredential(ctx context.Context, client *ent.Cl
 	}
 
 	extraInfo := appendPasswordHistory(entity.ExtraInfo, *entity.Credential,
-		r.configRepo.GetConfigInt(ctx, constants.ConfigKeyPasswordHistoryCount, constants.DefaultPasswordHistoryCount))
+		r.passwordHistoryCount(ctx))
 
 	builder := client.UserCredential.Update()
 	builder.Where(tenantWhere...)

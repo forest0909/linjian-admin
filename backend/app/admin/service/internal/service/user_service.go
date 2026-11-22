@@ -596,6 +596,8 @@ func (s *UserService) Update(ctx context.Context, req *identityV1.UpdateUserRequ
 		}
 		targetUsername := targetUser.GetUsername()
 		targetID, newPassword := req.GetId(), req.GetPassword()
+		// 口令策略在更新事务开始之前读好：事务里改密时不再用别的连接查 sys_config。
+		ctx = s.userCredentialRepo.PreloadPasswordPolicy(ctx)
 		// 改密和用户行、角色在同一个事务里：权限检查不通过或口令不合规时一起回滚。
 		guard.ResetPassword = func(cctx context.Context, tx *ent.Tx) error {
 			return s.userCredentialRepo.ResetCredentialWithTx(cctx, tx, targetID, &authenticationV1.ResetCredentialRequest{

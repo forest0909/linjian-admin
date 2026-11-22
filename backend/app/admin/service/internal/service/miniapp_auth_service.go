@@ -254,7 +254,7 @@ func (s *MiniappAuthService) issue(ctx context.Context, user *identityV1.User, b
 		return nil, err
 	}
 
-	accessToken, err := s.authn.issueAppSession(ctx, tokenPayload, bindingID, revokeVersion)
+	accessToken, err := s.authn.issueAppSession(ctx, tokenPayload, bindingID, revokeVersion, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -278,7 +278,7 @@ func (s *MiniappAuthService) Logout(ctx context.Context, _ *emptypb.Empty) (*emp
 	if operator.GetClientType() != authenticationV1.ClientType_app {
 		return nil, authenticationV1.ErrorBadRequest("miniapp logout only accepts app token")
 	}
-	if err = s.revoker.RevokeAppSession(ctx, operator.GetUserId(), operator.GetJti()); err != nil {
+	if err = s.revoker.RevokeAppSession(ctx, nil, operator.GetUserId(), operator.GetJti()); err != nil {
 		return nil, err
 	}
 	return &emptypb.Empty{}, nil
@@ -333,18 +333,9 @@ func (s *MiniappAuthService) DeleteUserBinding(ctx context.Context, req *authent
 		return nil, err
 	}
 
-	// 权限上限：不能动权限比自己高的账号的登录凭证。
-	roleIDs, err := s.userRepo.ListRoleIDsByUserID(ctx, target.GetId())
-	if err != nil {
-		s.log.Errorf(ctx, "list roles of user [%d] failed: %v", target.GetId(), err)
-		return nil, adminV1.ErrorInternalServerError("query user roles failed")
-	}
-	if err = ensureTargetWithinOperator(ctx, s.roleRepo, s.userRepo.ListRoleIDsByUserID, operator, target.GetId(), roleIDs); err != nil {
-		s.log.Errorf(ctx, "operator [%d] unbind miniapp of user [%d] rejected: %v", operator.GetUserId(), target.GetId(), err)
-		return nil, err
-	}
-
-	if err = s.revoker.RevokeBinding(ctx, target.GetId(), req.GetId()); err != nil {
+	// 数据范围和权限上限（不能动权限比自己高的账号的登录凭证）在删除事务里、锁住目标用户行之后复核：
+	// 检查和删除之间不会被并发的角色提升或调动插进来。上面那次读取只是为了尽早给出 404。
+	if err = s.revoker.RevokeBinding(ctx, operator, target.GetId(), req.GetId()); err != nil {
 		return nil, err
 	}
 	s.log.Infof(ctx, "operator [%d] removed miniapp binding [%d] of user [%d]", operator.GetUserId(), req.GetId(), target.GetId())

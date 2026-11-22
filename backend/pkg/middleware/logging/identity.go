@@ -19,6 +19,24 @@ type identitySlotKey struct{}
 
 type identitySlot struct {
 	payload *authenticationV1.UserTokenPayload
+	// username 登录接口交给审计的用户名（见 SetAuditUsername）。
+	username string
+}
+
+// SetAuditUsername 登录接口把「这次登录针对哪个账号」交给外层的登录审计，登录失败（没有已验证身份）时用。
+// 传进来的值由服务端决定：解析出的真实用户名，或打过码的登录标识。它只进审计记录，
+// 不经过响应头，客户端看不到（手机号登录失败时不能把匹配到的用户名漏给调用方）。
+func SetAuditUsername(ctx context.Context, username string) {
+	if slot, ok := ctx.Value(identitySlotKey{}).(*identitySlot); ok {
+		slot.username = username
+	}
+}
+
+func auditUsernameFromContext(ctx context.Context) string {
+	if slot, ok := ctx.Value(identitySlotKey{}).(*identitySlot); ok {
+		return slot.username
+	}
+	return ""
 }
 
 func withIdentitySlot(ctx context.Context) (context.Context, *identitySlot) {

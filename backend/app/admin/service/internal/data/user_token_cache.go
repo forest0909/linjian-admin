@@ -420,12 +420,6 @@ func (r *UserTokenCache) RevokeToken(ctx context.Context, clientType authenticat
 		errs = append(errs, err)
 	}
 
-	// 会话元数据随令牌一并清理，保持「无令牌即无会话记录」的一致性
-	if err := r.DeleteUserSessionMetas(ctx, clientType, userId); err != nil {
-		r.log.Errorf(ctx, "remove user session metas failed: [%v]", err)
-		errs = append(errs, err)
-	}
-
 	// 宽限集合不在 rt:{ct}:{uid}:* 的扫描范围内。留下的话，全量吊销后
 	// 宽限期内的旧 RT 仍能换出新令牌。
 	if err := r.del(ctx, r.makeRefreshTokenGraceKey(clientType, userId)); err != nil {
@@ -433,7 +427,19 @@ func (r *UserTokenCache) RevokeToken(ctx context.Context, clientType authenticat
 		errs = append(errs, err)
 	}
 
-	return errors.Join(errs...)
+	if len(errs) > 0 {
+		// 没做完：会话元数据留着，它是重试的入口。按会话下线（退出、踢会话、强制下线）要靠它
+		// 找到会话和它记着的绑定，重试时才会再走一遍全量吊销；先删掉的话，重试只能按 JTI 吊销
+		// 一个会话（或者直接 404），其余没删掉的令牌就留下了。和 RevokeTokenByJti 的做法一致。
+		return errors.Join(errs...)
+	}
+
+	// 令牌都清干净了，再清会话元数据，保持「无令牌即无会话记录」的一致性
+	if err := r.DeleteUserSessionMetas(ctx, clientType, userId); err != nil {
+		r.log.Errorf(ctx, "remove user session metas failed: [%v]", err)
+		return err
+	}
+	return nil
 }
 
 // RevokeAccessToken 移除访问令牌

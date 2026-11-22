@@ -54,9 +54,10 @@ var sensitiveProtoFieldNames = map[protoreflect.Name]struct{}{
 type contactRedaction int
 
 const (
-	redactClear contactRedaction = iota // 清空
-	redactPhone                         // 手机号打码：138****0000
-	redactEmail                         // 邮箱打码：a***@example.com
+	redactClear    contactRedaction = iota // 清空
+	redactPhone                            // 手机号打码：138****0000
+	redactEmail                            // 邮箱打码：a***@example.com
+	redactIfMobile                         // 登录标识：是手机号才打码，用户名原样留着
 )
 
 // contactFieldRedactions 按消息全名登记的 string 字段处理：手机号和邮箱在访问日志里只留打码后的样子。
@@ -68,6 +69,8 @@ var contactFieldRedactions = map[protoreflect.FullName]map[protoreflect.Name]con
 	"identity.service.v1.PhoneVerification": {"phone": redactPhone},
 	"identity.service.v1.EmailVerification": {"email": redactEmail},
 	"identity.service.v1.User":              {"mobile": redactPhone, "email": redactEmail},
+	// 登录框的 username 可以填手机号。
+	"authentication.service.v1.LoginRequest": {"username": redactIfMobile},
 }
 
 func redactContactValue(kind contactRedaction, value string) string {
@@ -76,6 +79,8 @@ func redactContactValue(kind contactRedaction, value string) string {
 		return phone.Mask(value)
 	case redactEmail:
 		return phone.MaskEmail(value)
+	case redactIfMobile:
+		return phone.MaskIfMobile(value)
 	default:
 		return ""
 	}
