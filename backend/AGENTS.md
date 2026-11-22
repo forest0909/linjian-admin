@@ -370,6 +370,7 @@ make -C app/admin/service run
 | `oss.yaml`    | 对象存储配置               |
 | `client.yaml` | 客户端配置                |
 | `mail.yaml`   | 验证码 SMTP / 短信配置。口令留空表示未配置，填了口令的副本不要提交 |
+| `wechat.yaml` | 微信小程序登录（`miniapp.app_id` / `app_secret` / `mock`）。`app_id` 留空表示未启用；填了 Secret 的副本不要提交，生产用环境变量注入。见 `docs/miniapp.md` |
 | `local/`      | 可选覆盖层，目录存在才加载。显式写出的标量（含空字符串、false、0）覆盖同名键，没写的键保留原值。已 gitignore，本机口令只放这里 |
 
 ## 编码约定

@@ -45,6 +45,7 @@
 | [crud_module_guide/](./crud_module_guide/) | 新增完整 CRUD 业务模块的端到端手册：README 跨端编排与通用陷阱、backend.md 后端全流程与样例镜像索引、external.md 接客户已有数据库（外部数据源）的模块写法、三端各自的页面实现参考（正文为英文原稿） | 接到「新增模块/新增资源/新建管理页」需求、动工新增整个模块之前；只给已有资源加字段先看 field_change_guide.md |
 | [frontend_authority.md](./frontend_authority.md) | 前端权限：路由访问模式、按钮权限码/角色、字段级权限 V1 | 改路由/按钮可见性/受控字段时 |
 | [adopt-one-frontend.md](./adopt-one-frontend.md) | 只保留一个前端的裁剪：三端独立性实测、`make ts` 回流、CORS、菜单表无"端"维度的后果 | 决定只用 react / vue-element / vue-vben 之一、要删掉另外两端之前 |
+| [miniapp.md](./miniapp.md) | 微信小程序接入：登录流程、`wechat.yaml` 与 AppID 配置、本地开发（mock）、真机验收清单、下线和解绑的语义、上线前的手机号核对 | 接入小程序、排小程序登录问题、解绑或强制下线用户前 |
 | [authentication.md](./authentication.md) | 认证与令牌链路：登录全流程、令牌结构与配置、刷新轮换与 Cookie、限流与验证码、会话吊销 | 改登录/令牌/刷新/限流前 |
 | [tenant_isolation.md](./tenant_isolation.md) | `tenant_id` 遗留列（固定为 0）、旧库升级时自动清理的租户配置、`tenant_id>0` 业务数据的手工清理 | 升级旧库、看到 tenant_id 想动它之前 |
 | [task_system.md](./task_system.md) | 任务调度系统：配置与启动链、任务数据模型、调度生命周期、系统级常驻任务、管理页与排障 | 加任务类型、排"任务没跑"、接新调度需求前 |

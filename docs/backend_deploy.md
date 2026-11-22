@@ -128,7 +128,7 @@ docker compose up -d --build --wait
         - ./deploy-local:/app/configs/local:ro
   ```
 
-  合并规则见下文「本地覆盖配置」。常见的有：SMTP/短信（`mail.yaml`）、收窄可信代理（`server.yaml`）。
+  合并规则见下文「本地覆盖配置」。常见的有：SMTP/短信（`mail.yaml`）、微信小程序（`wechat.yaml`）、收窄可信代理（`server.yaml`）。
 
 ### 反向代理、客户端 IP 与 HTTPS
 
@@ -340,6 +340,23 @@ server:
 - 不写 `trusted_proxies`：保持上面的默认网段。
 - 写了 `trusted_proxies` 但 `cidrs` 为空：不信任任何代理，始终用 TCP 对端地址（后端直接对外、前面没有代理时用）。
 - 支持 CIDR，也支持单个 IP。非法条目会被跳过。
+
+## 微信小程序登录
+
+小程序登录由 `configs/wechat.yaml` 控制，`app_id` 留空表示未启用（app 登录和微信接口全部拒绝）。接入流程、验收清单见 [miniapp.md](./miniapp.md)。
+
+| 环境变量 | 用途 |
+|---|---|
+| `GWA_WECHAT_MINIAPP_APP_ID` | 小程序 AppID，优先于 `wechat.yaml` |
+| `GWA_WECHAT_MINIAPP_APP_SECRET` | 小程序 Secret，优先于 `wechat.yaml`。**生产用环境变量注入，不要写进提交的 yaml** |
+
+- Compose 部署：这两个变量加进 `backend/.env`，并在 `docker-compose.yaml` 的 `admin-service` 的 `environment` 里透传；或用 `configs/local/wechat.yaml` 覆盖层（`.env` 之外的配置走挂载，见「配置覆盖」）。
+- 配了 `app_id` 没配 `app_secret` 启动报错（开着 mock 的开发构建除外）；文件存在但解析失败启动报错。开发用环境变量 `GWA_WECHAT_MINIAPP_MOCK` 也能打开 mock，同样只在带 `miniapp_mock` 标签的构建里有效。启动时读一次，改了要重启。
+- **多实例开启顺序**：先让所有实例升级到能识别令牌 `ct` 声明的版本，再填 `app_id`。
+- **mock 不能进生产**：`wechat.yaml` 的 `mock: true` 只在带 `miniapp_mock` 编译标签的开发构建里有效。正式制品（`make build`、Docker 镜像）不带这个标签，读到 `mock: true` 会拒绝启动。`run-miniapp-mock` 构建只连本机的开发库和开发 Redis。
+- 后端要能访问微信服务端 `api.weixin.qq.com`（`jscode2session`、`getuserphonenumber`、`stable_token`），超时 5 秒。access_token 缓存在 Redis 的 `gowind:wechat:miniapp:access_token:{appid}`。
+- 小程序前端的合法域名要填后端的 HTTPS 域名；小程序的 H5 产物同样走同源相对路径，不改后端 CORS。
+- 更换 AppID 后旧绑定全部失效，要手工清理 `provider='wechat_miniapp'` 的行（见 miniapp.md 2.3）。
 
 ## 生产环境密钥配置
 
