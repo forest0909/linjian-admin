@@ -15,6 +15,7 @@ enum AuthenticationErrorReason {
     INVALID_TOKEN = 3 [(errors.code) = 400];// token无效
     INVALID_PASSWORD = 4 [(errors.code) = 400];// 密码无效
     INVALID_CAPTCHA = 6 [(errors.code) = 400];// 验证码缺失或错误
+    MINIAPP_CODE_INVALID = 7 [(errors.code) = 400];// 微信 code 无效、已使用或过期
 
     // 401
     UNAUTHORIZED = 100 [(errors.code) = 401]; // 未授权
@@ -30,6 +31,8 @@ enum AuthenticationErrorReason {
 
     // 403
     FORBIDDEN = 300 [(errors.code) = 403]; // 禁止访问
+    MINIAPP_PHONE_NOT_REGISTERED = 301 [(errors.code) = 403]; // 手机号没有对应的账号
+    MINIAPP_NOT_BOUND = 302 [(errors.code) = 403]; // 这个微信没有绑定账号
 
     // 404
     NOT_FOUND = 400 [(errors.code) = 404]; // 找不到资源
@@ -51,6 +54,8 @@ enum AuthenticationErrorReason {
 
     // 409
     CONFLICT = 900 [(errors.code) = 409];                   // 冲突
+    MINIAPP_PHONE_AMBIGUOUS = 901 [(errors.code) = 409];    // 手机号对应多个账号
+    MINIAPP_BOUND_TO_OTHER = 902 [(errors.code) = 409];     // 这个微信已绑定其他账号
 
     // 410
     GONE = 1000 [(errors.code) = 410];                       // 已删除
@@ -121,6 +126,7 @@ enum AuthenticationErrorReason {
 
     // 503
     SERVICE_UNAVAILABLE = 2300 [(errors.code) = 503];          // 服务不可用
+    MINIAPP_UNAVAILABLE = 2301 [(errors.code) = 503];          // 微信登录暂不可用
 
     // 504
     GATEWAY_TIMEOUT = 2400 [(errors.code) = 504];              // 网关超时

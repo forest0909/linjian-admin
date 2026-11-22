@@ -1,0 +1,15 @@
+# pnpm v12 构建审批：下列依赖不执行 install 脚本。
+# - @swc/core、@tarojs/binding、@parcel/watcher、esbuild：二进制由 optional 平台包分发，跳过是安全的。
+# - @tarojs/cli、@nutui/nutui-react-taro：postinstall 只做京东内部的统计上报和插件安装，构建不需要。
+allowBuilds:
+  '@nutui/nutui-react-taro': false
+  '@parcel/watcher': false
+  '@swc/core': false
+  '@tarojs/binding': false
+  '@tarojs/cli': false
+  core-js: false
+  core-js-pure: false
+  esbuild: false
+# NutUI 把使用统计工具列为 optionalDependencies（版本写的是 latest），这里去掉，保证安装结果固定。
+overrides:
+  '@jmfe/npm-usage-stats-tool': '-'

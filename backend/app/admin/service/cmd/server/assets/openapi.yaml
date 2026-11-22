@@ -2258,6 +2258,62 @@ paths:
                 "200":
                     description: OK
                     content: {}
+    /admin/v1/miniapp/login/phone:
+        post:
+            tags:
+                - MiniappAuthService
+            description: 手机号一键登录
+            operationId: MiniappAuthService_LoginByPhone
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/MiniappPhoneLoginRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/LoginResponse'
+            security:
+                - {}
+    /admin/v1/miniapp/login/silent:
+        post:
+            tags:
+                - MiniappAuthService
+            description: 静默续期
+            operationId: MiniappAuthService_SilentLogin
+            requestBody:
+                content:
+                    application/json:
+                        schema:
+                            $ref: '#/components/schemas/MiniappSilentLoginRequest'
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/LoginResponse'
+            security:
+                - {}
+    /admin/v1/miniapp/logout:
+        post:
+            tags:
+                - MiniappAuthService
+            description: 退出（只接受小程序令牌）
+            operationId: MiniappAuthService_Logout
+            requestBody:
+                content:
+                    application/json: {}
+                required: true
+            responses:
+                "200":
+                    description: OK
+                    content: {}
     /admin/v1/online-session/force-logout:
         post:
             tags:
@@ -3787,6 +3843,49 @@ paths:
                 "200":
                     description: OK
                     content: {}
+    /admin/v1/users/{userId}/miniapp-bindings:
+        get:
+            tags:
+                - MiniappAuthService
+            description: 查询用户的微信小程序绑定
+            operationId: MiniappAuthService_ListUserBindings
+            parameters:
+                - name: userId
+                  in: path
+                  required: true
+                  schema:
+                    type: integer
+                    format: uint32
+            responses:
+                "200":
+                    description: OK
+                    content:
+                        application/json:
+                            schema:
+                                $ref: '#/components/schemas/ListMiniappBindingsResponse'
+    /admin/v1/users/{userId}/miniapp-bindings/{id}:
+        delete:
+            tags:
+                - MiniappAuthService
+            description: 解除用户的微信小程序绑定
+            operationId: MiniappAuthService_DeleteUserBinding
+            parameters:
+                - name: userId
+                  in: path
+                  required: true
+                  schema:
+                    type: integer
+                    format: uint32
+                - name: id
+                  in: path
+                  required: true
+                  schema:
+                    type: integer
+                    format: uint32
+            responses:
+                "200":
+                    description: OK
+                    content: {}
     /admin/v1/users/{userId}/password:
         post:
             tags:
@@ -4994,6 +5093,14 @@ components:
                 total:
                     type: string
             description: 查询菜单列表 - 回应
+        ListMiniappBindingsResponse:
+            type: object
+            properties:
+                items:
+                    type: array
+                    items:
+                        $ref: '#/components/schemas/MiniappBinding'
+            description: 查询用户的微信小程序绑定 - 回应
         ListOnlineSessionResponse:
             type: object
             properties:
@@ -5312,6 +5419,9 @@ components:
                 id_token:
                     type: string
                     description: ID 令牌，OpenID Connect 扩展中定义的 JWT 格式令牌
+                miniapp_bound:
+                    type: boolean
+                    description: app 登录时返回：true 表示这个微信到本用户的绑定已在库里，令牌过期后可以静默续期。
             description: 用户后台登录 - 回应
         LoginTrendResponse:
             type: object
@@ -5545,6 +5655,38 @@ components:
                 meta:
                     $ref: '#/components/schemas/MenuMeta'
             description: 路由项
+        MiniappBinding:
+            type: object
+            properties:
+                id:
+                    type: integer
+                    description: 绑定ID（sys_user_credentials.id）
+                    format: uint32
+                openidMasked:
+                    type: string
+                    description: 打码后的 openid（前 6 后 4）
+                createdAt:
+                    type: string
+                    description: 绑定时间
+                    format: date-time
+            description: 微信小程序绑定
+        MiniappPhoneLoginRequest:
+            type: object
+            properties:
+                code:
+                    type: string
+                    description: wx.login 返回的 code
+                phoneCode:
+                    type: string
+                    description: getPhoneNumber 返回的 code
+            description: 一键登录 - 请求。两个 code 都只由服务端向微信兑换；请求里没有 openid 和手机号字段。
+        MiniappSilentLoginRequest:
+            type: object
+            properties:
+                code:
+                    type: string
+                    description: wx.login 返回的 code
+            description: 静默续期 - 请求。只带新的 wx.login code。
         OnlineSession:
             type: object
             properties:
@@ -7008,6 +7150,8 @@ tags:
       description: 登录审计日志管理服务
     - name: MenuService
       description: 后台菜单管理服务
+    - name: MiniappAuthService
+      description: 微信小程序登录认证服务
     - name: OnlineSessionService
       description: 在线会话管理服务（在线用户列表 + 强制下线）
     - name: OperationAuditLogService

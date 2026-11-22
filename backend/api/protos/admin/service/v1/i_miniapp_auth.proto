@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package admin.service.v1;
+
+import "gnostic/openapi/v3/annotations.proto";
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+
+import "authentication/service/v1/authentication.proto";
+import "authentication/service/v1/miniapp_auth.proto";
+
+// 微信小程序登录认证服务
+service MiniappAuthService {
+  // 手机号一键登录
+  rpc LoginByPhone (authentication.service.v1.MiniappPhoneLoginRequest) returns (authentication.service.v1.LoginResponse) {
+    option (google.api.http) = {
+      post: "/admin/v1/miniapp/login/phone"
+      body: "*"
+    };
+
+    option(gnostic.openapi.v3.operation) = {
+      security: {}
+    };
+  }
+
+  // 静默续期
+  rpc SilentLogin (authentication.service.v1.MiniappSilentLoginRequest) returns (authentication.service.v1.LoginResponse) {
+    option (google.api.http) = {
+      post: "/admin/v1/miniapp/login/silent"
+      body: "*"
+    };
+
+    option(gnostic.openapi.v3.operation) = {
+      security: {}
+    };
+  }
+
+  // 退出（只接受小程序令牌）
+  rpc Logout (google.protobuf.Empty) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      post: "/admin/v1/miniapp/logout"
+      body: "*"
+    };
+  }
+
+  // 查询用户的微信小程序绑定
+  rpc ListUserBindings (authentication.service.v1.ListMiniappBindingsRequest) returns (authentication.service.v1.ListMiniappBindingsResponse) {
+    option (google.api.http) = {
+      get: "/admin/v1/users/{user_id}/miniapp-bindings"
+    };
+  }
+
+  // 解除用户的微信小程序绑定
+  rpc DeleteUserBinding (authentication.service.v1.DeleteMiniappBindingRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/admin/v1/users/{user_id}/miniapp-bindings/{id}"
+    };
+  }
+}

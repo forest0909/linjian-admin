@@ -114,6 +114,23 @@
     "newEmailRequired": "New email is required",
     "vcodeRequired": "Code is required",
     "bindSuccess": "Email bound successfully",
-    "bindFailed": "Failed to bind"
+    "bindFailed": "Failed to bind",
+    "phoneBindNow": "Bind phone",
+    "phoneRebind": "Change phone",
+    "bindPhoneTitle": "Bind Phone",
+    "newPhone": "New phone",
+    "newPhonePlaceholder": "Enter an 11-digit mainland China number",
+    "newPhoneRequired": "Please enter the new phone number",
+    "newPhoneInvalid": "Invalid phone number",
+    "phoneVcodePlaceholder": "Enter the SMS code",
+    "phoneBindSuccess": "Phone updated. Mini program needs to sign in again",
+    "smsNotConfigured": "SMS is not configured. Please ask an administrator to change your phone number",
+    "phoneHint": "Your phone number is a mini program sign-in credential. After changing it, all bound WeChat accounts are unbound and the mini program must sign in again.",
+    "mobileHint": "Phone number cannot be edited here. Change it with an SMS code on the Account Binding tab",
+    "phoneUnbound": "Not bound",
+    "phoneUnchanged": "The new number is the same as the current one",
+    "phonePartial": "Phone updated, but revoking mini program sessions did not complete. Old sessions may stay valid until they expire. Please contact an administrator",
+    "resend": "Resend",
+    "resendIn": "Resend in {{seconds}}s"
   }
 }

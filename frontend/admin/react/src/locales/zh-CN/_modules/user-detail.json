@@ -36,5 +36,21 @@
   "confirmPasswordPlaceholder": "请再次输入新密码",
   "passwordMismatch": "两次输入的密码不一致",
   "editPasswordSuccess": "密码修改成功",
-  "editPasswordFailed": "密码修改失败"
+  "editPasswordFailed": "密码修改失败",
+  "miniapp": {
+    "title": "微信小程序绑定",
+    "empty": "暂无绑定",
+    "openid": "微信标识",
+    "createdAt": "绑定时间",
+    "action": "操作",
+    "unbind": "解绑",
+    "unbindConfirmTitle": "确认解绑",
+    "unbindConfirmDesc": "该用户的小程序会话将全部失效，其他已绑定的微信会自动重新登录。",
+    "unbindSuccess": "已解绑",
+    "unbindFailed": "解绑失败",
+    "loadFailed": "加载绑定信息失败",
+    "retryHint": "解绑未完全成功：绑定可能已删除，但小程序会话尚未全部吊销，旧会话可能在过期前仍可使用。请重试解绑。",
+    "retry": "重试解绑",
+    "dismiss": "忽略"
+  }
 }

@@ -28,7 +28,9 @@ import (
 
 	"go-wind-admin/pkg/constants"
 	"go-wind-admin/pkg/middleware/auth"
+	"go-wind-admin/pkg/middleware/logging"
 	"go-wind-admin/pkg/netutil"
+	"go-wind-admin/pkg/phone"
 )
 
 // 验证码相关请求头（H5：登录强制验证码，通过 header 传递以避免改动 proto 与三套前端生成代码）。
@@ -176,6 +178,9 @@ type AuthenticationService struct {
 
 	captchaClient *captcha.Captcha
 	rateLimiter   *data.LoginRateLimiter
+
+	// miniapp 微信小程序登录的配置、客户端和请求额度；未启用时为 nil，一切 app 签发都拒绝。
+	miniapp *MiniappRuntime
 }
 
 func NewAuthenticationService(
@@ -192,6 +197,7 @@ func NewAuthenticationService(
 	clientType authenticationV1.ClientType,
 	captchaClient *captcha.Captcha,
 	rateLimiter *data.LoginRateLimiter,
+	miniapp *MiniappRuntime,
 ) *AuthenticationService {
 	return &AuthenticationService{
 		log:                     ctx.NewLoggerHelper("authn/service/admin-service"),
@@ -207,6 +213,7 @@ func NewAuthenticationService(
 		clientType:              clientType,
 		captchaClient:           captchaClient,
 		rateLimiter:             rateLimiter,
+		miniapp:                 miniapp,
 	}
 }
 
@@ -221,6 +228,12 @@ func (s *AuthenticationService) resetContextForLogin(ctx context.Context) contex
 
 // Login 登录
 func (s *AuthenticationService) Login(ctx context.Context, req *authenticationV1.LoginRequest) (*authenticationV1.LoginResponse, error) {
+	// 小程序（client_type=app）登录：wechat.yaml 的 app_id 为空时一切 app 签发都拒绝，放在验证码校验之前。
+	// 多实例部署时先让所有实例升级到能识别 ct 的版本，再填 app_id 开启。
+	if req.GetClientType() == authenticationV1.ClientType_app && !s.miniapp.Enabled() {
+		return nil, authenticationV1.ErrorMiniappUnavailable("miniapp login is not enabled")
+	}
+
 	switch req.GetGrantType() {
 	case authenticationV1.GrantType_password:
 		return s.doGrantTypePassword(ctx, req)
@@ -441,6 +454,10 @@ func (s *AuthenticationService) doGrantTypePassword(ctx context.Context, req *au
 	} else if resolved != username {
 		username = resolved
 	}
+	// 日志和登录审计里的登录标识：手机号匹配到账号时是真实用户名；没匹配到时是原始输入，
+	// 可能就是一个手机号，打码后再用。审计用户名走 ctx 交给审计中间件，不经过响应。
+	logUsername := phone.MaskIfMobile(username)
+	logging.SetAuditUsername(ctx, logUsername)
 
 	// ===== H5 闸门 1：登录限流预检（按 IP + 解析后的用户名双维度）=====
 	// 必须用解析后的 username：失败计数按它累计，用 email/手机号登录不能绕过账号锁定。
@@ -448,19 +465,40 @@ func (s *AuthenticationService) doGrantTypePassword(ctx context.Context, req *au
 		if locked, lerr := s.rateLimiter.IsLocked(ctx, clientIP, username); lerr != nil {
 			s.log.Errorf(ctx, "login rate limiter pre-check failed: %s", lerr.Error())
 		} else if locked {
-			s.log.Warnf(ctx, "login blocked by rate limiter: ip=%s, username=%s", clientIP, username)
+			s.log.Warnf(ctx, "login blocked by rate limiter: ip=%s, username=%s", clientIP, logUsername)
 			return nil, authenticationV1.ErrorTooManyRequests("too many login failures, please try again later")
+		}
+	}
+
+	// ===== 小程序：确定用户后、校验密码之前先读撤销版本 =====
+	// 签发时按这个版本条件写入：读完版本之后如果改密、改号、下线完成了，版本对不上，令牌写不进去。
+	// 版本必须在认证之前读，否则「用旧密码通过校验 → 改密并吊销完成 → 读到新版本 → 签发成功」就漏了。
+	isApp := req.GetClientType() == authenticationV1.ClientType_app
+	var appRevokeVersion int64
+	var appUserID uint32
+	if isApp {
+		var lerr error
+		if appUserID, lerr = s.userCredentialRepo.LookupCredentialUserID(ctx, tenantID, authenticationV1.UserCredential_USERNAME, username); lerr != nil {
+			return nil, lerr
+		}
+		// 没找到用户时不读：后面的凭证校验会走统一的失败路径。
+		if appUserID != 0 {
+			if appRevokeVersion, lerr = s.authenticator.ReadRevokeVersion(ctx, authenticationV1.ClientType_app, appUserID); lerr != nil {
+				s.log.Errorf(ctx, "read app revoke version failed for user [%d]: %v", appUserID, lerr)
+				return nil, authenticationV1.ErrorMiniappUnavailable("miniapp login is temporarily unavailable")
+			}
 		}
 	}
 
 	// ===== 凭证校验：在租户 0 范围内查单条凭证并校验密码 =====
 	// 注意用解析后的 username 局部变量（可能是 email/mobile 反查所得），而非 req 原始输入
 	var matchedUserID uint32
+	var passwordSnapshot string
 	var err error
-	matchedUserID, err = s.userCredentialRepo.FindUserCredential(ctx, tenantID, authenticationV1.UserCredential_USERNAME, username, req.GetPassword(), true)
+	matchedUserID, passwordSnapshot, err = s.userCredentialRepo.FindUserCredentialWithSnapshot(ctx, tenantID, authenticationV1.UserCredential_USERNAME, username, req.GetPassword(), true)
 	if err != nil {
 		// 服务端日志保留真实原因（USER_NOT_FOUND / USER_FREEZE / INVALID_PASSWORD），便于运维排查
-		s.log.Errorf(ctx, "verify user credential failed for username [%s]: %s", username, err.Error())
+		s.log.Errorf(ctx, "verify user credential failed for username [%s]: %s", logUsername, err.Error())
 
 		// H5：登录失败时自增失败计数（按 IP + 用户名双维度）
 		if s.rateLimiter != nil {
@@ -494,6 +532,15 @@ func (s *AuthenticationService) doGrantTypePassword(ctx context.Context, req *au
 		Username: user.Username,
 		ClientId: req.ClientId,
 		DeviceId: req.DeviceId,
+	}
+
+	if isApp {
+		// 撤销版本是按校验前查到的用户读的；两次查到的不是同一个用户时不签发（用户名在这一瞬间换了主人）。
+		if matchedUserID != appUserID {
+			s.log.Errorf(ctx, "app login: credential owner changed during login ([%d] -> [%d])", appUserID, matchedUserID)
+			return nil, authenticationV1.ErrorConflict("account changed during login, please retry")
+		}
+		return s.finishAppPasswordLogin(ctx, req, user, tokenPayload, passwordSnapshot, appRevokeVersion, clientIP, username)
 	}
 
 	// 解析用户权限信息
@@ -698,7 +745,13 @@ func (s *AuthenticationService) Logout(ctx context.Context, _ *emptypb.Empty) (*
 		return nil, err
 	}
 
-	if err = s.authenticator.RevokeUserToken(ctx, s.clientType, operator.GetUserId()); err != nil {
+	// 管理端的登出只收 admin 令牌。app 令牌走小程序自己的退出接口，
+	// 否则小程序一次退出会把同一用户的管理端会话全部吊销。
+	if operator.GetClientType() != authenticationV1.ClientType_admin {
+		return nil, authenticationV1.ErrorBadRequest("logout only accepts admin token")
+	}
+
+	if err = s.authenticator.RevokeUserToken(ctx, authenticationV1.ClientType_admin, operator.GetUserId()); err != nil {
 		return nil, err
 	}
 

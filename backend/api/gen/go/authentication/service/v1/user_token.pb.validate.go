@@ -79,6 +79,10 @@ func (m *UserTokenPayload) validate(all bool) error {
 		// no validation rules for Username
 	}
 
+	if m.ClientType != nil {
+		// no validation rules for ClientType
+	}
+
 	if m.DataScope != nil {
 		// no validation rules for DataScope
 	}

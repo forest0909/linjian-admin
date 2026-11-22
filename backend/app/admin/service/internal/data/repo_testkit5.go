@@ -26,6 +26,9 @@
 package data
 
 import (
+	"context"
+
+	"go-wind-admin/pkg/middleware/auth"
 	bLogger "go-wind-admin/third_party/kratos-bootstrap/logger"
 
 	entCrud "go-wind-admin/third_party/go-crud/entgo"
@@ -164,4 +167,33 @@ func NewAuthenticatorForTest(jwtCfg *conf.Authentication_Jwt, userTokenCache *Us
 	}
 
 	return &a, nil
+}
+
+// NewTokenCheckerForTest 与生产 NewTokenChecker 逐字段一致（log 换 NopLogger）。
+func NewTokenCheckerForTest(authenticator *Authenticator) auth.AccessTokenChecker {
+	return &TokenChecker{
+		log:           bLogger.NewHelper(bLogger.NopLogger()),
+		authenticator: authenticator,
+	}
+}
+
+// GetRefreshTokensForTest 读出用户在 Redis 里的全部 refresh token（测试里模拟浏览器 Cookie）。
+func (a *Authenticator) GetRefreshTokensForTest(ctx context.Context, clientType authenticationV1.ClientType, userId uint32) []string {
+	return a.userTokenCache.GetRefreshTokens(ctx, clientType, userId)
+}
+
+// NewVCodeCacheForTest 与生产 NewVCodeCache 逐字段一致（log 换 NopLogger）。
+func NewVCodeCacheForTest(rdb *redis.Client) *VCodeCache {
+	return &VCodeCache{
+		rdb: rdb,
+		log: bLogger.NewHelper(bLogger.NopLogger()),
+	}
+}
+
+// NewMiniappQuotaForTest 与生产 NewMiniappQuota 逐字段一致（log 换 NopLogger）。
+func NewMiniappQuotaForTest(rdb *redis.Client) *MiniappQuota {
+	return &MiniappQuota{
+		rdb: rdb,
+		log: bLogger.NewHelper(bLogger.NopLogger()),
+	}
 }

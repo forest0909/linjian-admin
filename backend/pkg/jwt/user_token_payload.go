@@ -34,7 +34,29 @@ const (
 	ClaimFieldHiddenFields = "hfs" // 字段权限隐藏字段集（"资源.字段" 串，多角色并集）
 
 	ClaimFieldIsPlatformAdmin = "ipa" // 是否平台管理员
+
+	ClaimFieldClientType = "ct" // 客户端类型（枚举名：admin / app）；缺省视为 admin
 )
+
+// ErrInvalidClientTypeClaim ct 声明存在，但不是已知的客户端类型。
+var ErrInvalidClientTypeClaim = errors.New("invalid client type claim")
+
+// parseClientTypeClaim 解析 ct 声明。没有这个声明返回 (nil, nil)，由调用方按 admin 处理
+// （升级前签发的管理端令牌没有 ct）；有声明但不是 admin / app 返回错误。
+func parseClientTypeClaim(raw interface{}, present bool) (*authenticationV1.ClientType, error) {
+	if !present {
+		return nil, nil
+	}
+	name, ok := raw.(string)
+	if !ok {
+		return nil, ErrInvalidClientTypeClaim
+	}
+	v, ok := authenticationV1.ClientType_value[name]
+	if !ok {
+		return nil, ErrInvalidClientTypeClaim
+	}
+	return trans.Ptr(authenticationV1.ClientType(v)), nil
+}
 
 const (
 	// defaultTokenLeeway 令牌时间容差，防止因时间不同步导致的验证失败
@@ -128,6 +150,9 @@ func NewUserTokenAuthClaims(
 	}
 	if tokenPayload.IsPlatformAdmin != nil {
 		authClaims[ClaimFieldIsPlatformAdmin] = tokenPayload.GetIsPlatformAdmin()
+	}
+	if tokenPayload.ClientType != nil {
+		authClaims[ClaimFieldClientType] = tokenPayload.GetClientType().String()
 	}
 
 	return &authClaims
@@ -248,6 +273,12 @@ func NewUserTokenPayloadWithClaims(claims *authn.AuthClaims) (*authenticationV1.
 		payload.IsPlatformAdmin = trans.Ptr(true)
 	}
 
+	// ct 值非法的令牌整体拒绝：不能把来历不明的类型当成 admin 放行。
+	rawClientType, hasClientType := (*claims)[ClaimFieldClientType]
+	if payload.ClientType, err = parseClientTypeClaim(rawClientType, hasClientType); err != nil {
+		return nil, err
+	}
+
 	return payload, nil
 }
 
@@ -296,6 +327,12 @@ func NewUserTokenPayloadWithJwtMapClaims(claims jwt.MapClaims) (*authenticationV
 
 	if ipa, ok := claims[ClaimFieldIsPlatformAdmin].(bool); ok && ipa {
 		payload.IsPlatformAdmin = trans.Ptr(true)
+	}
+
+	// 这里解析的是没验签的令牌，只用于审计展示：ct 不合法就当没有，不报错。
+	rawClientType, hasClientType := claims[ClaimFieldClientType]
+	if ct, ctErr := parseClientTypeClaim(rawClientType, hasClientType); ctErr == nil {
+		payload.ClientType = ct
 	}
 
 	roleCodes := claims[ClaimFieldRoleCodes]

@@ -15,6 +15,9 @@ export * from './user';
 // 用户个人资料
 export * from './user-profile';
 
+// 用户的微信小程序绑定
+export * from './miniapp-binding';
+
 // 租户管理
 
 // 组织人员管理 (OPM)

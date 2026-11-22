@@ -19,6 +19,10 @@ var sessionOnlyOperations = map[string]bool{
 	adminV1.OperationAuthenticationServiceLogin:        true,
 	adminV1.OperationAuthenticationServiceRefreshToken: true,
 	adminV1.OperationAuthenticationServiceLogout:       true,
+	// 小程序的登录、续期、退出同理：一键登录和退出进登录审计，静默续期和管理端刷新一样不记。
+	adminV1.OperationMiniappAuthServiceLoginByPhone: true,
+	adminV1.OperationMiniappAuthServiceSilentLogin:  true,
+	adminV1.OperationMiniappAuthServiceLogout:       true,
 }
 
 // Server is an server logging middleware.
@@ -26,8 +30,12 @@ func Server(opts ...Option) middleware.Middleware {
 	op := options{
 		loginOperations: []string{
 			adminV1.OperationAuthenticationServiceLogin,
+			adminV1.OperationMiniappAuthServiceLoginByPhone,
 		},
-		logoutOperation: adminV1.OperationAuthenticationServiceLogout,
+		logoutOperations: []string{
+			adminV1.OperationAuthenticationServiceLogout,
+			adminV1.OperationMiniappAuthServiceLogout,
+		},
 	}
 	for _, o := range opts {
 		o(&op)

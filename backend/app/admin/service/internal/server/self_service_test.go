@@ -19,6 +19,10 @@ func TestAuthzRequiredMatcher(t *testing.T) {
 		adminV1.OperationDictEntryServiceDelete:                       true,
 		adminV1.OperationDictTypeServiceUpdate:                        true,
 		adminV1.OperationUserServiceList:                              true,
+		// 小程序退出是自助接口；管理端查看和解除绑定要在角色管理里明确授权。
+		adminV1.OperationMiniappAuthServiceLogout:            false,
+		adminV1.OperationMiniappAuthServiceListUserBindings:  true,
+		adminV1.OperationMiniappAuthServiceDeleteUserBinding: true,
 	} {
 		if got := required(context.Background(), op); got != want {
 			t.Errorf("%s: authz required = %v, want %v", op, got, want)

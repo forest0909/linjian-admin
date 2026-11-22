@@ -39,7 +39,7 @@ const UserProfile = () => {
     {
       key: '4',
       label: t('tab.accountBind'),
-      children: <AccountBind onSwitchTab={handleSwitchTab} />,
+      children: <AccountBind />,
     },
     {
       key: '5',

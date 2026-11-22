@@ -148,7 +148,11 @@ func TestAuthenticator_RevokeAllFiresHooks(t *testing.T) {
 	a, _ := newRaceAuthenticator(t)
 	ctx := context.Background()
 	var fired []uint32
-	a.OnUserTokensRevoked(func(_ context.Context, uid uint32) { fired = append(fired, uid) })
+	var firedTypes []authenticationV1.ClientType
+	a.OnUserTokensRevoked(func(_ context.Context, clientType authenticationV1.ClientType, uid uint32) {
+		fired = append(fired, uid)
+		firedTypes = append(firedTypes, clientType)
+	})
 
 	_, _, jti := raceLogin(t, a)
 	ct := authenticationV1.ClientType_admin
@@ -157,9 +161,16 @@ func TestAuthenticator_RevokeAllFiresHooks(t *testing.T) {
 
 	require.NoError(t, a.RevokeUserToken(ctx, ct, raceTestUID))
 	require.Equal(t, []uint32{raceTestUID}, fired)
+	require.Equal(t, []authenticationV1.ClientType{authenticationV1.ClientType_admin}, firedTypes)
 
-	fired = nil
+	// 只吊销 app：回调带的是 app，订阅方据此决定要不要断管理端的连接。
+	fired, firedTypes = nil, nil
+	require.NoError(t, a.RevokeUserToken(ctx, authenticationV1.ClientType_app, raceTestUID))
+	require.Equal(t, []authenticationV1.ClientType{authenticationV1.ClientType_app}, firedTypes)
+
+	fired, firedTypes = nil, nil
 	require.NoError(t, a.RevokeUserTokenAllClientTypes(ctx, raceTestUID))
+	require.ElementsMatch(t, []authenticationV1.ClientType{authenticationV1.ClientType_admin, authenticationV1.ClientType_app}, firedTypes)
 	require.NotEmpty(t, fired)
 	for _, uid := range fired {
 		require.Equal(t, raceTestUID, uid)

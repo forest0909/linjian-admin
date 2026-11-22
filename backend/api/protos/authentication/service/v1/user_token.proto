@@ -6,6 +6,8 @@ import "gnostic/openapi/v3/annotations.proto";
 
 import "identity/service/v1/types.proto";
 
+import "authentication/service/v1/client_type.proto";
+
 // 用户令牌载体
 message UserTokenPayload {
   uint32 user_id = 1 [
@@ -42,6 +44,13 @@ message UserTokenPayload {
       description: "用户名"
     }
   ]; // 用户名
+
+  optional ClientType client_type = 6 [
+    json_name = "ct",
+    (gnostic.openapi.v3.property) = {
+      description: "客户端类型（签发时写入；缺省视为 admin）"
+    }
+  ]; // 客户端类型（签发时写入；缺省视为 admin）
 
   repeated string roles = 10 [
     json_name = "roc",

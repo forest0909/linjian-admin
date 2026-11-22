@@ -120,7 +120,6 @@ const BaseSetting = () => {
             nickname: user?.nickname || '',
             realname: user?.realname || '',
             email: user?.email || '',
-            mobile: user?.mobile || '',
             telephone: user?.telephone || '',
             gender: user?.gender,
             region: user?.region || '',
@@ -138,8 +137,9 @@ const BaseSetting = () => {
           <Form.Item name="email" label={t('field.email')}>
             <Input placeholder={t('common:placeholder.input')} />
           </Form.Item>
-          <Form.Item name="mobile" label={t('field.mobile')}>
-            <Input placeholder={t('common:placeholder.input')} />
+          {/* 手机号是登录凭证：只读，更换走「账号绑定」页的短信验证码。不带 name，不进提交值 */}
+          <Form.Item label={t('field.mobile')} extra={t('accountBind.mobileHint')}>
+            <Input value={user?.mobile || ''} disabled />
           </Form.Item>
           <Form.Item name="telephone" label={t('field.telephone')}>
             <Input placeholder={t('common:placeholder.input')} />

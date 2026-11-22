@@ -32,6 +32,7 @@ import (
 	permissionV1 "go-wind-admin/api/gen/go/permission/service/v1"
 
 	"go-wind-admin/pkg/constants"
+	"go-wind-admin/pkg/phone"
 )
 
 type UserRepo interface {
@@ -45,6 +46,9 @@ type UserRepo interface {
 	BeginTx(ctx context.Context) (*ent.Tx, error)
 
 	Update(ctx context.Context, req *identityV1.UpdateUserRequest) error
+	// UpdateGuarded 同 Update，另外把手机号和密码当登录凭证处理：要写凭证时在事务里、锁住用户行之后、
+	// 写入之前回调 guard（返回错误则整个更新回滚），并返回这次更新里手机号的实际去向。见 UserUpdateGuard。
+	UpdateGuarded(ctx context.Context, req *identityV1.UpdateUserRequest, guard *UserUpdateGuard) (UserUpdateOutcome, error)
 
 	Delete(ctx context.Context, req *identityV1.DeleteUserRequest) error
 
@@ -73,6 +77,9 @@ type UserRepo interface {
 
 	// CountByTenantIDs 批量统计各租户下的用户数，用于回填 tenant.member_count。
 	CountByTenantIDs(ctx context.Context, tenantIDs []uint32) (map[uint32]int, error)
+
+	// FindUserIDsByMobile 小程序一键登录按已验证的手机号查用户：tenant_id = 0 AND mobile = ?。
+	FindUserIDsByMobile(ctx context.Context, mobile string) ([]uint32, error)
 
 	// FindUsernameByIdentifier 登录 identifier 智能解析：含 @ 按 email 查、
 	// 纯数字按 mobile 查，其余原样视为 username 返回（userId=0 表示未反查）。
@@ -646,12 +653,18 @@ func (r *userRepo) CreateWithTx(ctx context.Context, tx *ent.Tx, data *identityV
 }
 
 // Update 更新用户
-func (r *userRepo) Update(ctx context.Context, req *identityV1.UpdateUserRequest) (err error) {
+func (r *userRepo) Update(ctx context.Context, req *identityV1.UpdateUserRequest) error {
+	_, err := r.UpdateGuarded(ctx, req, nil)
+	return err
+}
+
+// UpdateGuarded 更新用户；凭证写入的检查见 guardCredentialWrite。
+func (r *userRepo) UpdateGuarded(ctx context.Context, req *identityV1.UpdateUserRequest, guard *UserUpdateGuard) (outcome UserUpdateOutcome, err error) {
 	if req == nil || req.Data == nil {
-		return identityV1.ErrorBadRequest("invalid parameter")
+		return outcome, identityV1.ErrorBadRequest("invalid parameter")
 	}
 	if req.GetId() == 0 {
-		return identityV1.ErrorBadRequest("id is required")
+		return outcome, identityV1.ErrorBadRequest("id is required")
 	}
 
 	// 如果不存在则创建
@@ -661,14 +674,14 @@ func (r *userRepo) Update(ctx context.Context, req *identityV1.UpdateUserRequest
 			QueryBy: &identityV1.UserExistsRequest_Id{Id: req.GetId()},
 		})
 		if err != nil {
-			return err
+			return outcome, err
 		}
 		if !existResp.Exist {
 			createReq := &identityV1.CreateUserRequest{Data: req.Data}
 			createReq.Data.CreatedBy = createReq.Data.UpdatedBy
 			createReq.Data.UpdatedBy = nil
 			_, err = r.Create(ctx, createReq)
-			return err
+			return outcome, err
 		}
 	}
 
@@ -676,7 +689,7 @@ func (r *userRepo) Update(ctx context.Context, req *identityV1.UpdateUserRequest
 	tx, err = r.entClient.Client().Tx(ctx)
 	if err != nil {
 		r.log.Errorf(ctx, "start transaction failed: %s", err.Error())
-		return identityV1.ErrorInternalServerError("start transaction failed")
+		return outcome, identityV1.ErrorInternalServerError("start transaction failed")
 	}
 	var txCommitted bool
 	defer finishEntTx(tx, &txCommitted, func(rollbackErr error) {
@@ -693,6 +706,9 @@ func (r *userRepo) Update(ctx context.Context, req *identityV1.UpdateUserRequest
 	// 非 nil mask 做赋值/剔除，故此处初始化空 mask（panic 修复，e2e 揪出）。
 	normalizeUserUniqueFields(req.Data)
 
+	// 调用方有没有显式给出 mask 路径。显式 mask 在下面的过滤里可能被删空（关联字段、掩码回传），
+	// 那表示「没有用户字段要写」，不能当成没给 mask 的全量更新。
+	explicitMask := len(req.GetUpdateMask().GetPaths()) > 0
 	if req.GetUpdateMask() == nil {
 		req.UpdateMask = &fieldmaskpb.FieldMask{}
 	}
@@ -766,9 +782,69 @@ func (r *userRepo) Update(ctx context.Context, req *identityV1.UpdateUserRequest
 		req.GetUpdateMask().Paths = sliceutil.FilterBlacklist(req.GetUpdateMask().Paths, []string{"mobile"})
 	}
 
+	// 先锁用户行。凭证写入（改号、改密）和角色变更都先锁这一行，对同一个用户串行。
+	current, err := lockUserRow(ctx, tx, r.entClient.Driver().Dialect(), req.GetId())
+	if err != nil {
+		return outcome, mapUserWriteError(r.log, ctx, "lock user", err)
+	}
+
+	// 手机号和密码是登录凭证：要写它们时先过 guard，再写任何东西。
+	if outcome, err = r.guardCredentialWrite(ctx, tx, current, req, explicitMask, guard); err != nil {
+		return outcome, err
+	}
+
 	var entity *identityV1.User
+	if explicitMask && len(req.GetUpdateMask().GetPaths()) == 0 {
+		// 显式 mask 过滤后没有用户字段要写：跳过用户行，只做下面的关联更新。
+		entity = r.mapper.ToDTO(current)
+	} else {
+		entity, err = r.updateUserRow(ctx, tx, req)
+	}
+	// 用户行没更新成功就不能再动关联：以前这里不查 err，紧接着被 assignUserRelations 的结果覆盖，
+	// 用户不存在 / 唯一冲突时照样按 tenant_id=0 重写关联并提交，接口回 200。
+	if err != nil {
+		return outcome, mapUserWriteError(r.log, ctx, "update user", err)
+	}
+
+	switch constants.DefaultUserTenantRelationType {
+	case constants.UserTenantRelationNone, constants.UserTenantRelationOneToOne:
+		if err = r.assignUserRelations(ctx, tx,
+			entity.GetTenantId(),
+			req.GetId(),
+			roleIds,
+			orgUnitIds,
+			positionIds); err != nil {
+			return outcome, err
+		}
+	case constants.UserTenantRelationOneToMany:
+		if err = r.assignMembershipRelations(ctx, tx,
+			entity.GetTenantId(),
+			req.GetId(),
+			roleIds,
+			orgUnitIds,
+			positionIds); err != nil {
+			return outcome, err
+		}
+	}
+
+	// 附带重置密码：和用户行、角色在同一个事务里，权限检查不通过或改密失败都一起回滚。
+	if guard != nil && guard.ResetPassword != nil {
+		if err = guard.ResetPassword(ctx, tx); err != nil {
+			return outcome, err
+		}
+	}
+
+	if commitErr := commitEntTx(tx, &txCommitted); commitErr != nil {
+		r.log.Errorf(ctx, "transaction commit failed: %s", commitErr.Error())
+		return outcome, identityV1.ErrorInternalServerError("transaction commit failed")
+	}
+	return outcome, nil
+}
+
+// updateUserRow 按 mask 写用户行的字段。
+func (r *userRepo) updateUserRow(ctx context.Context, tx *ent.Tx, req *identityV1.UpdateUserRequest) (*identityV1.User, error) {
 	builder := tx.User.UpdateOneID(req.GetId())
-	entity, err = r.repository.UpdateOne(ctx, builder, req.Data, req.GetUpdateMask(),
+	return r.repository.UpdateOne(ctx, builder, req.Data, req.GetUpdateMask(),
 		func(dto *identityV1.User) {
 			builder.
 				SetNillableNickname(req.Data.Nickname).
@@ -794,38 +870,6 @@ func (r *userRepo) Update(ctx context.Context, req *identityV1.UpdateUserRequest
 			s.Where(sql.EQ(user.FieldID, req.GetId()))
 		},
 	)
-	// 用户行没更新成功就不能再动关联：以前这里不查 err，紧接着被 assignUserRelations 的结果覆盖，
-	// 用户不存在 / 唯一冲突时照样按 tenant_id=0 重写关联并提交，接口回 200。
-	if err != nil {
-		return mapUserWriteError(r.log, ctx, "update user", err)
-	}
-
-	switch constants.DefaultUserTenantRelationType {
-	case constants.UserTenantRelationNone, constants.UserTenantRelationOneToOne:
-		if err = r.assignUserRelations(ctx, tx,
-			entity.GetTenantId(),
-			req.GetId(),
-			roleIds,
-			orgUnitIds,
-			positionIds); err != nil {
-			return err
-		}
-	case constants.UserTenantRelationOneToMany:
-		if err = r.assignMembershipRelations(ctx, tx,
-			entity.GetTenantId(),
-			req.GetId(),
-			roleIds,
-			orgUnitIds,
-			positionIds); err != nil {
-			return err
-		}
-	}
-
-	if commitErr := commitEntTx(tx, &txCommitted); commitErr != nil {
-		r.log.Errorf(ctx, "transaction commit failed: %s", commitErr.Error())
-		return identityV1.ErrorInternalServerError("transaction commit failed")
-	}
-	return nil
 }
 
 // normalizeUserUniqueFields 把参与唯一索引的可选字段里的空串归一成 NULL。
@@ -1321,7 +1365,7 @@ func (r *userRepo) FindUsernameByIdentifier(ctx context.Context, tenantID uint32
 		case 1:
 			return *entities[0].Username, entities[0].ID, nil
 		default:
-			r.log.Errorf(ctx, "ambiguous mobile login: tenant=%d mobile=%s rows=%d", tenantID, identifier, len(entities))
+			r.log.Errorf(ctx, "ambiguous mobile login: tenant=%d mobile=%s rows=%d", tenantID, phone.Mask(identifier), len(entities))
 			return "", 0, identityV1.ErrorInternalServerError("ambiguous account identifier")
 		}
 
@@ -1341,6 +1385,23 @@ func isDigits(s string) bool {
 		}
 	}
 	return true
+}
+
+// FindUserIDsByMobile 按已验证的手机号查用户，条件写死：tenant_id = 0 AND mobile = ?，精确相等。
+// 小程序一键登录用：调用方没有登录身份，这里按登录的方式放行，只返回用户 ID。
+// mobile 不唯一，命中几行就返回几个，由调用方决定 0 行、多行怎么拒绝。
+func (r *userRepo) FindUserIDsByMobile(ctx context.Context, mobile string) ([]uint32, error) {
+	ids, err := r.entClient.Client().User.Query().
+		Where(
+			user.TenantIDEQ(0),
+			user.MobileEQ(mobile),
+		).
+		IDs(miniappLoginContext(ctx))
+	if err != nil {
+		r.log.Errorf(ctx, "find users by mobile failed: %s", err.Error())
+		return nil, identityV1.ErrorInternalServerError("find user by mobile failed")
+	}
+	return ids, nil
 }
 
 func (r *userRepo) ListRoleIDsByUserID(ctx context.Context, userID uint32) ([]uint32, error) {

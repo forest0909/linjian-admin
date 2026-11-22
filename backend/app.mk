@@ -70,7 +70,7 @@ APP_RELATIVE_PATH	:= $(shell a=`basename $$PWD` && cd .. && b=`basename $$PWD` &
 SERVICE_NAME		:= $(shell a=`basename $$PWD` && cd .. && b=`basename $$PWD` && echo $$b)
 APP_NAME			:= $(shell echo $(APP_RELATIVE_PATH) | sed -En "s/\//-/p")
 
-.PHONY: build clean docker gen ent api openapi run app help
+.PHONY: build clean docker gen ent api openapi run run-miniapp-mock app help
 
 # show environment variables
 env:
@@ -87,17 +87,35 @@ env:
 	echo "LAST_TAG: $(LAST_TAG)"
 	echo "VERSION: $(VERSION)"
 
+# 正式打包入口（build、build_only）拒绝 miniapp_mock 编译标签：带这个标签的制品里是微信登录的 mock 实现。
+# 标签可能从三处进来：make 的 GOFLAGS 变量、环境变量 GOFLAGS、go env -w 写下的 GOFLAGS。
+# 这里问 go 工具本身「这次构建实际生效的标签」，三处都覆盖。只在这两个目标的配方里展开，
+# 开发用的 run-miniapp-mock 不受影响。
+RELEASE_BUILD_TAGS = $(shell go list $(GOFLAGS) -f "{{context.BuildTags}}" ./cmd/server)
+define reject_mock_tag
+$(if $(findstring miniapp_mock,$(RELEASE_BUILD_TAGS)),$(error miniapp_mock build tag is active (check GOFLAGS); refusing to build a release artifact with the mock WeChat client))
+endef
+
 # build golang application
 build: api openapi
+	$(reject_mock_tag)
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o ./bin/ ./...
 
 # build golang application only
 build_only:
+	$(reject_mock_tag)
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o ./bin/ ./...
 
 # run application
 run: api openapi
 	go run $(GOFLAGS) -ldflags "$(LDFLAGS)" ./cmd/server -c ./configs
+
+# 本机开发：带 miniapp_mock 标签编译，微信小程序登录用 mock 客户端（不调微信）。
+# mock_openid_<串> / mock_phone_<号码> 直接通过，只能连本机的开发库和开发 Redis。
+# 正式制品（make build、Docker 镜像）不带这个标签，读到 mock 配置会拒绝启动。
+run-miniapp-mock: api openapi
+	GWA_WECHAT_MINIAPP_MOCK=true GWA_WECHAT_MINIAPP_APP_ID=$${GWA_WECHAT_MINIAPP_APP_ID:-wx-mock-appid} \
+		go run -tags miniapp_mock $(GOFLAGS) -ldflags "$(LDFLAGS)" ./cmd/server -c ./configs
 
 # build service app
 app: api openapi ent build
@@ -119,6 +137,7 @@ ifneq ("$(wildcard ./internal/data/ent)","")
 				--feature sql/modifier \
 				--feature sql/upsert \
 				--feature sql/lock \
+				--feature sql/execquery \
 				./internal/data/ent/schema
 endif
 
