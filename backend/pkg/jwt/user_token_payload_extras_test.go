@@ -11,6 +11,7 @@ import (
 
 	authn "go-wind-admin/third_party/kratos-authn/engine"
 
+	authenticationV1 "go-wind-admin/api/gen/go/authentication/service/v1"
 	identityV1 "go-wind-admin/api/gen/go/identity/service/v1"
 )
 
@@ -283,4 +284,40 @@ func TestIsTokenNotValidYet(t *testing.T) {
 			assert.Equal(t, tc.want, IsTokenNotValidYet(tc.claims))
 		})
 	}
+}
+
+// TestClientTypeClaim ct 声明的互转：签发写枚举名；解析时缺省为 nil（调用方按 admin），
+// 值非法报错；不验签的审计解析遇到非法值只是忽略。
+func TestClientTypeClaim(t *testing.T) {
+	for _, ct := range []authenticationV1.ClientType{authenticationV1.ClientType_admin, authenticationV1.ClientType_app} {
+		claims := NewUserTokenAuthClaims(&authenticationV1.UserTokenPayload{UserId: 1, ClientType: trans.Ptr(ct)}, nil)
+		require.Equal(t, ct.String(), (*claims)[ClaimFieldClientType])
+		payload, err := NewUserTokenPayloadWithClaims(claims)
+		require.NoError(t, err)
+		require.NotNil(t, payload.ClientType)
+		require.Equal(t, ct, payload.GetClientType())
+	}
+
+	// 没有 ct：不写声明，解析回来是 nil，Getter 给出 admin。
+	claims := NewUserTokenAuthClaims(&authenticationV1.UserTokenPayload{UserId: 1}, nil)
+	_, has := (*claims)[ClaimFieldClientType]
+	require.False(t, has)
+	payload, err := NewUserTokenPayloadWithClaims(claims)
+	require.NoError(t, err)
+	require.Nil(t, payload.ClientType)
+	require.Equal(t, authenticationV1.ClientType_admin, payload.GetClientType())
+
+	for _, bad := range []interface{}{"web", "", 1, float64(0), nil} {
+		(*claims)[ClaimFieldClientType] = bad
+		_, err = NewUserTokenPayloadWithClaims(claims)
+		require.ErrorIs(t, err, ErrInvalidClientTypeClaim, "ct=%v", bad)
+
+		mapPayload, mapErr := NewUserTokenPayloadWithJwtMapClaims(jwtV5.MapClaims{ClaimFieldClientType: bad})
+		require.NoError(t, mapErr)
+		require.Nil(t, mapPayload.ClientType)
+	}
+
+	mapPayload, err := NewUserTokenPayloadWithJwtMapClaims(jwtV5.MapClaims{ClaimFieldClientType: "app"})
+	require.NoError(t, err)
+	require.Equal(t, authenticationV1.ClientType_app, mapPayload.GetClientType())
 }

@@ -1,0 +1,10 @@
+# 微信小程序登录。app_id 留空表示未启用：app 登录和微信接口全部拒绝。
+# 填了 app_secret 的副本不要提交，生产用环境变量注入：
+#   GWA_WECHAT_MINIAPP_APP_ID、GWA_WECHAT_MINIAPP_APP_SECRET（优先于本文件）。
+# 多实例部署时先让所有实例升级完，再填 app_id 开启。启动时读一次，改了要重启。
+miniapp:
+  app_id: ""
+  app_secret: ""
+  # 只在带 miniapp_mock 编译标签的开发构建里有效（make -C app/admin/service run-miniapp-mock）。
+  # 正式二进制读到 true 会拒绝启动。
+  mock: false

@@ -17,6 +17,12 @@ type AccessTokenChecker interface {
 	IsBlockedAccessToken(ctx context.Context, accessToken string) (blocked bool)
 }
 
+// AccessTokenVerifier 检查器可选实现：校验失败时带出原因。
+// 返回的错误状态码是 503 表示令牌存储故障，其余都按令牌失效处理。
+type AccessTokenVerifier interface {
+	VerifyAccessToken(ctx context.Context, accessToken string) (payload *authenticationV1.UserTokenPayload, err error)
+}
+
 type AccessTokenCheckerFunc func(ctx context.Context, accessToken string, skipRedis bool) (bool, *authenticationV1.UserTokenPayload)
 
 func (f AccessTokenCheckerFunc) IsValidAccessToken(ctx context.Context, accessToken string, skipRedis bool) (bool, *authenticationV1.UserTokenPayload) {

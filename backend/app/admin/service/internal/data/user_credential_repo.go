@@ -390,16 +390,48 @@ func (r *UserCredentialRepo) performDummyVerify(plainCredential string) {
 // needDecrypt 为 true 时，plainCredential 应为 base64+AES 加密密文，会自动解密。
 // 返回匹配到的用户 ID，调用方可据此通过 ID 查找用户。
 func (r *UserCredentialRepo) FindUserCredential(ctx context.Context, tenantID uint32, identityType authenticationV1.UserCredential_IdentityType, identifier, plainCredential string, needDecrypt bool) (uint32, error) {
+	userID, _, err := r.FindUserCredentialWithSnapshot(ctx, tenantID, identityType, identifier, plainCredential, needDecrypt)
+	return userID, err
+}
+
+// LookupCredentialUserID 只按身份类型和标识符找凭证归属的用户 ID，不校验密码。没找到返回 0。
+// 小程序密码登录用它在校验密码之前确定用户，好先读撤销版本。结果不能当作认证依据。
+func (r *UserCredentialRepo) LookupCredentialUserID(ctx context.Context, tenantID uint32, identityType authenticationV1.UserCredential_IdentityType, identifier string) (uint32, error) {
+	entities, err := r.entClient.Client().UserCredential.Query().
+		Select(usercredential.FieldUserID).
+		Where(
+			usercredential.TenantIDEQ(tenantID),
+			usercredential.IdentityTypeEQ(*r.identityTypeConverter.ToEntity(trans.Ptr(identityType))),
+			usercredential.IdentifierEQ(identifier),
+		).
+		All(ctx)
+	if err == nil {
+		var entity *ent.UserCredential
+		if entity, err = r.pickLiveCredential(ctx, entities); err == nil && entity.UserID != nil {
+			return *entity.UserID, nil
+		}
+	}
+	if err == nil || ent.IsNotFound(err) {
+		return 0, nil
+	}
+	r.log.Errorf(ctx, "lookup credential owner failed: %s", err.Error())
+	return 0, authenticationV1.ErrorServiceUnavailable("db error")
+}
+
+// FindUserCredentialWithSnapshot 同 FindUserCredential，另外返回校验时读到的凭证值（snapshot）。
+// 小程序绑定事务拿它重新确认：锁住用户行之后凭证值还是这个，说明密码在校验之后没被改过。
+// 比的是哈希值而不是更新时间：每次改密哈希都会变，不受时间精度影响。
+func (r *UserCredentialRepo) FindUserCredentialWithSnapshot(ctx context.Context, tenantID uint32, identityType authenticationV1.UserCredential_IdentityType, identifier, plainCredential string, needDecrypt bool) (uint32, string, error) {
 	if needDecrypt {
 		bytesPass, err := base64.StdEncoding.DecodeString(plainCredential)
 		if err != nil {
 			r.log.Errorf(ctx, "decode base64 credential failed: %s", err.Error())
-			return 0, authenticationV1.ErrorBadRequest("invalid credential format")
+			return 0, "", authenticationV1.ErrorBadRequest("invalid credential format")
 		}
 		decrypted, err := crypto.AesDecrypt(bytesPass, crypto.DefaultAESKey, nil)
 		if err != nil {
 			r.log.Errorf(ctx, "decrypt credential failed: %s", err.Error())
-			return 0, authenticationV1.ErrorBadRequest("decrypt credential failed")
+			return 0, "", authenticationV1.ErrorBadRequest("decrypt credential failed")
 		}
 		plainCredential = string(decrypted)
 	}
@@ -427,19 +459,19 @@ func (r *UserCredentialRepo) FindUserCredential(ctx context.Context, tenantID ui
 		// 恒定时间防护：用户不存在时也跑一次 bcrypt 校验，避免被计时攻击枚举用户名
 		r.performDummyVerify(plainCredential)
 		if ent.IsNotFound(err) {
-			return 0, authenticationV1.ErrorUserNotFound("user not found")
+			return 0, "", authenticationV1.ErrorUserNotFound("user not found")
 		}
 		r.log.Errorf(ctx, "query credential failed: %s", err.Error())
-		return 0, authenticationV1.ErrorServiceUnavailable("db error")
+		return 0, "", authenticationV1.ErrorServiceUnavailable("db error")
 	}
 
 	if entity.Status == nil || entity.CredentialType == nil || entity.Credential == nil || entity.UserID == nil {
 		r.performDummyVerify(plainCredential)
-		return 0, authenticationV1.ErrorUserNotFound("user not found")
+		return 0, "", authenticationV1.ErrorUserNotFound("user not found")
 	}
 	if *entity.Status != usercredential.StatusEnabled {
 		r.performDummyVerify(plainCredential)
-		return 0, authenticationV1.ErrorUserNotFound("user not found")
+		return 0, "", authenticationV1.ErrorUserNotFound("user not found")
 	}
 
 	if r.verifyCredential(entity.CredentialType, plainCredential, *entity.Credential) {
@@ -448,13 +480,13 @@ func (r *UserCredentialRepo) FindUserCredential(ctx context.Context, tenantID ui
 		if maxAge := r.configRepo.GetConfigInt(ctx, constants.ConfigKeyPasswordMaxAgeDays, constants.DefaultPasswordMaxAgeDays); maxAge > 0 && *entity.CredentialType == usercredential.CredentialTypePasswordHash {
 			if entity.UpdatedAt != nil && time.Since(*entity.UpdatedAt) > time.Duration(maxAge)*24*time.Hour {
 				r.log.Warnf(ctx, "password expired for user [%d] (age > %dd), login denied", *entity.UserID, maxAge)
-				return 0, authenticationV1.ErrorBadRequest("password expired, please reset your password")
+				return 0, "", authenticationV1.ErrorBadRequest("password expired, please reset your password")
 			}
 		}
-		return *entity.UserID, nil
+		return *entity.UserID, *entity.Credential, nil
 	}
 
-	return 0, authenticationV1.ErrorInvalidPassword("incorrect password")
+	return 0, "", authenticationV1.ErrorInvalidPassword("incorrect password")
 }
 
 // pickLiveCredential 从同一 (tenant, identity_type, identifier) 命中的凭证里挑出唯一一条。
@@ -543,7 +575,7 @@ func (r *UserCredentialRepo) prepareCredential(ctx context.Context, credentialTy
 		// 等保口令策略：哈希前对明文做复杂度校验（覆盖创建/修改/重置全部路径）。
 		// 长度阈值自 sys_config 平台参数读取（参数管理页可调）。
 		if err := password.ValidateComplexity(plainCredential,
-			r.configRepo.GetConfigInt(ctx, constants.ConfigKeyPasswordMinLen, constants.DefaultPasswordMinLen)); err != nil {
+			r.passwordMinLen(ctx)); err != nil {
 			return "", authenticationV1.ErrorBadRequest("%s", err.Error())
 		}
 		var err error
@@ -596,6 +628,29 @@ func (r *UserCredentialRepo) ChangeCredential(ctx context.Context, userID uint32
 		req.NewCredential = string(newPlain)
 	}
 
+	// 口令策略在开事务之前读好：事务里不再用别的连接查 sys_config。
+	ctx = r.PreloadPasswordPolicy(ctx)
+
+	// 改密和删微信绑定在同一个事务里，先锁用户行：和小程序的绑定事务对同一个用户串行。
+	// 绑定事务要么在改密之前提交（随后在这里被删掉），要么在之后开始（重新确认时发现密码已变，不写）。
+	tx, err := r.entClient.Client().Tx(ctx)
+	if err != nil {
+		r.log.Errorf(ctx, "start transaction failed: %s", err.Error())
+		return authenticationV1.ErrorInternalServerError("start transaction failed")
+	}
+	var txCommitted bool
+	defer finishEntTx(tx, &txCommitted, func(rollbackErr error) {
+		r.log.Errorf(ctx, "transaction rollback failed: %s", rollbackErr.Error())
+	})
+	client := tx.Client()
+
+	// 用户行不存在（只剩凭证行的遗留数据）时没有行可锁，也不会有绑定事务和它竞争
+	// （绑定事务锁不到用户行就不写），照原来的行为继续改密。
+	if _, err = lockUserRow(viewer.WithSystemContext(ctx), tx, r.entClient.Driver().Dialect(), userID); err != nil && !ent.IsNotFound(err) {
+		r.log.Errorf(ctx, "lock user [%d] failed: %s", userID, err.Error())
+		return authenticationV1.ErrorInternalServerError("query user failed")
+	}
+
 	// 按 user_id 定位，并且只认租户 0：旧库遗留的同名 tenant_id>0 凭证不参与匹配，也不会被一并改掉。
 	tenantWhere := []predicate.UserCredential{
 		usercredential.UserIDEQ(userID),
@@ -604,7 +659,7 @@ func (r *UserCredentialRepo) ChangeCredential(ctx context.Context, userID uint32
 		usercredential.TenantIDEQ(0),
 	}
 
-	entity, err := r.entClient.Client().UserCredential.
+	entity, err := client.UserCredential.
 		Query().
 		Select(
 			usercredential.FieldCredentialType,
@@ -648,9 +703,9 @@ func (r *UserCredentialRepo) ChangeCredential(ctx context.Context, userID uint32
 	}
 
 	extraInfo := appendPasswordHistory(entity.ExtraInfo, *entity.Credential,
-		r.configRepo.GetConfigInt(ctx, constants.ConfigKeyPasswordHistoryCount, constants.DefaultPasswordHistoryCount))
+		r.passwordHistoryCount(ctx))
 
-	builder := r.entClient.Client().UserCredential.Update()
+	builder := client.UserCredential.Update()
 	builder.Where(tenantWhere...)
 	builder.
 		SetCredential(newCredential).
@@ -661,11 +716,29 @@ func (r *UserCredentialRepo) ChangeCredential(ctx context.Context, userID uint32
 		return authenticationV1.ErrorInternalServerError("update data failed")
 	}
 
+	if err = deleteMiniappBindingsInTx(ctx, tx, userID); err != nil {
+		r.log.Errorf(ctx, "delete miniapp bindings of user [%d] failed: %s", userID, err.Error())
+		return authenticationV1.ErrorInternalServerError("delete miniapp bindings failed")
+	}
+	if commitErr := commitEntTx(tx, &txCommitted); commitErr != nil {
+		r.log.Errorf(ctx, "transaction commit failed: %s", commitErr.Error())
+		return authenticationV1.ErrorInternalServerError("transaction commit failed")
+	}
+
 	return nil
 }
 
 // ResetCredential 修改认证信息
 func (r *UserCredentialRepo) ResetCredential(ctx context.Context, userID uint32, req *authenticationV1.ResetCredentialRequest) error {
+	return r.resetCredential(ctx, r.entClient.Client(), userID, req)
+}
+
+// ResetCredentialWithTx 同 ResetCredential，读写都走给定的事务。
+func (r *UserCredentialRepo) ResetCredentialWithTx(ctx context.Context, tx *ent.Tx, userID uint32, req *authenticationV1.ResetCredentialRequest) error {
+	return r.resetCredential(ctx, tx.Client(), userID, req)
+}
+
+func (r *UserCredentialRepo) resetCredential(ctx context.Context, client *ent.Client, userID uint32, req *authenticationV1.ResetCredentialRequest) error {
 	if userID == 0 {
 		return authenticationV1.ErrorBadRequest("user id is required")
 	}
@@ -693,7 +766,7 @@ func (r *UserCredentialRepo) ResetCredential(ctx context.Context, userID uint32,
 		usercredential.TenantIDEQ(0),
 	}
 
-	entity, err := r.entClient.Client().UserCredential.
+	entity, err := client.UserCredential.
 		Query().
 		Select(
 			usercredential.FieldCredentialType,
@@ -732,9 +805,9 @@ func (r *UserCredentialRepo) ResetCredential(ctx context.Context, userID uint32,
 	}
 
 	extraInfo := appendPasswordHistory(entity.ExtraInfo, *entity.Credential,
-		r.configRepo.GetConfigInt(ctx, constants.ConfigKeyPasswordHistoryCount, constants.DefaultPasswordHistoryCount))
+		r.passwordHistoryCount(ctx))
 
-	builder := r.entClient.Client().UserCredential.Update()
+	builder := client.UserCredential.Update()
 	builder.Where(tenantWhere...)
 	builder.
 		SetCredential(newCredential).

@@ -134,12 +134,18 @@ func (s *InternalMessageService) HandleAuthorize(r *http.Request, token string) 
 	}
 
 	if resp.GetIsBlocked() {
-		s.log.Warnf(context.Background(), "token is blocked: %s", token)
+		s.log.Warnf(context.Background(), "token is blocked")
 		return authenticationV1.ErrorForbidden("token is blocked")
 	}
 	if !resp.GetIsValid() {
-		s.log.Warnf(context.Background(), "token is invalid: %s", token)
+		s.log.Warnf(context.Background(), "token is invalid")
 		return authenticationV1.ErrorUnauthorized("invalid token")
+	}
+
+	// SSE 是管理端专用通道：只收 admin 令牌，小程序（app）令牌拒绝。
+	if resp.GetPayload().GetClientType() != authenticationV1.ClientType_admin {
+		s.log.Warnf(context.Background(), "sse handshake rejected: token client type is [%v]", resp.GetPayload().GetClientType())
+		return authenticationV1.ErrorUnauthorized("sse only accepts admin token")
 	}
 
 	// 越权校验：streamID 已从 access token 改为 userId，必须保证订阅者只能订阅自己的流，

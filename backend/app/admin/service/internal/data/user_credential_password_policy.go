@@ -19,11 +19,49 @@ func usercredentialTypePasswordHash() usercredential.CredentialType {
 // passwordHistoryKey 是 extra_info JSON 里历史口令哈希数组的键。
 const passwordHistoryKey = "password_history"
 
+// passwordPolicy 改密要用到的口令策略参数（来自 sys_config）。
+type passwordPolicy struct {
+	minLen       int
+	historyCount int
+}
+
+type passwordPolicyKey struct{}
+
+// PreloadPasswordPolicy 在开事务之前把口令策略读出来放进 ctx，事务里用同一份值。
+// 策略参数由普通连接从 sys_config 读（带缓存）。改密的事务占着一个连接时再去读，
+// 缓存没命中就要等第二个连接：连接池只有一个连接、或者被这类事务占满时，会一直等到请求超时。
+// 所有「事务里改密」的入口都先调它。
+func (r *UserCredentialRepo) PreloadPasswordPolicy(ctx context.Context) context.Context {
+	if _, ok := ctx.Value(passwordPolicyKey{}).(passwordPolicy); ok {
+		return ctx
+	}
+	return context.WithValue(ctx, passwordPolicyKey{}, passwordPolicy{
+		minLen:       r.configRepo.GetConfigInt(ctx, constants.ConfigKeyPasswordMinLen, constants.DefaultPasswordMinLen),
+		historyCount: r.configRepo.GetConfigInt(ctx, constants.ConfigKeyPasswordHistoryCount, constants.DefaultPasswordHistoryCount),
+	})
+}
+
+// passwordMinLen 口令最小长度：ctx 里预读过就用预读的值，否则现查。
+func (r *UserCredentialRepo) passwordMinLen(ctx context.Context) int {
+	if p, ok := ctx.Value(passwordPolicyKey{}).(passwordPolicy); ok {
+		return p.minLen
+	}
+	return r.configRepo.GetConfigInt(ctx, constants.ConfigKeyPasswordMinLen, constants.DefaultPasswordMinLen)
+}
+
+// passwordHistoryCount 历史口令保留条数：ctx 里预读过就用预读的值，否则现查。
+func (r *UserCredentialRepo) passwordHistoryCount(ctx context.Context) int {
+	if p, ok := ctx.Value(passwordPolicyKey{}).(passwordPolicy); ok {
+		return p.historyCount
+	}
+	return r.configRepo.GetConfigInt(ctx, constants.ConfigKeyPasswordHistoryCount, constants.DefaultPasswordHistoryCount)
+}
+
 // checkPasswordHistory 等保口令策略：新明文口令不得与历史哈希列表中任一条
 // 相同（bcrypt 比对）。历史列表为空/解析失败时跳过（不阻塞主流程）。
 // 保留条数自 sys_config 平台参数读取（参数管理页可调，<=0 关闭）。
 func (r *UserCredentialRepo) checkPasswordHistory(ctx context.Context, entity *ent.UserCredential, newPlain string) error {
-	limit := r.configRepo.GetConfigInt(ctx, constants.ConfigKeyPasswordHistoryCount, constants.DefaultPasswordHistoryCount)
+	limit := r.passwordHistoryCount(ctx)
 	if limit <= 0 || entity == nil || entity.CredentialType == nil {
 		return nil
 	}

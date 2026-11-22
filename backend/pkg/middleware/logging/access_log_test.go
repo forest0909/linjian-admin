@@ -347,3 +347,95 @@ func newNestedPasswordMessage(t *testing.T) proto.Message {
 	tokens.Append(protoreflect.ValueOfString("repeated-token-9f3a"))
 	return outer
 }
+
+// 改手机号、改邮箱的验证码不进访问日志；请求原件不被改动。
+func TestFormatArgs_RedactsContactVerificationCode(t *testing.T) {
+	const smsCode, mailCode = "482913", "775201"
+
+	phoneReq := &identityV1.VerifyContactRequest{Contact: &identityV1.VerifyContactRequest_Phone{
+		Phone: &identityV1.PhoneVerification{Phone: "13800000001", Code: smsCode},
+	}}
+	out := FormatArgs(phoneReq)
+	require.NotContains(t, out, smsCode)
+	require.Equal(t, smsCode, phoneReq.GetPhone().GetCode(), "脱敏在克隆上做，不能改请求原件")
+
+	emailReq := &identityV1.VerifyContactRequest{Contact: &identityV1.VerifyContactRequest_Email{
+		Email: &identityV1.EmailVerification{Email: "a@example.com", Code: mailCode},
+	}}
+	out = FormatArgs(emailReq)
+	require.NotContains(t, out, mailCode)
+	require.Equal(t, mailCode, emailReq.GetEmail().GetCode())
+}
+
+// 改号、发码、管理员改用户资料的请求里，手机号和邮箱在访问日志里只留打码后的样子；
+// 发码请求自带的验证码字段清空。请求原件不被改动。
+func TestFormatArgs_MasksContacts(t *testing.T) {
+	const mobile, email, code = "13800000001", "alice@example.com", "482913"
+
+	cases := map[string]proto.Message{
+		"BindContact 手机": &identityV1.BindContactRequest{Contact: &identityV1.BindContactRequest_Phone{
+			Phone: &identityV1.BindPhoneRequest{Phone: mobile, Code: code},
+		}},
+		"BindContact 邮箱": &identityV1.BindContactRequest{Contact: &identityV1.BindContactRequest_Email{
+			Email: &identityV1.BindEmailRequest{Email: email, VerificationCode: trans.Ptr(code)},
+		}},
+		"VerifyContact 手机": &identityV1.VerifyContactRequest{Contact: &identityV1.VerifyContactRequest_Phone{
+			Phone: &identityV1.PhoneVerification{Phone: mobile, Code: code},
+		}},
+		"VerifyContact 邮箱": &identityV1.VerifyContactRequest{Contact: &identityV1.VerifyContactRequest_Email{
+			Email: &identityV1.EmailVerification{Email: email, Code: code},
+		}},
+		"管理员更新用户": &identityV1.UpdateUserRequest{Id: 7, Data: &identityV1.User{
+			Mobile: trans.Ptr(mobile), Email: trans.Ptr(email), Nickname: trans.Ptr("nick"),
+		}},
+		"创建用户": &identityV1.CreateUserRequest{Data: &identityV1.User{Mobile: trans.Ptr(mobile), Email: trans.Ptr(email)}},
+	}
+	for name, req := range cases {
+		before := proto.Clone(req)
+		out := FormatArgs(req)
+		require.NotContains(t, out, mobile, name)
+		require.NotContains(t, out, email, name)
+		require.NotContains(t, out, code, name)
+		require.True(t, proto.Equal(before, req), "%s: 请求原件不能被改动", name)
+	}
+
+	out := FormatArgs(cases["管理员更新用户"])
+	require.Contains(t, out, "138****0001")
+	require.Contains(t, out, "a***@example.com")
+	require.Contains(t, out, "nick", "其他字段照常记录")
+}
+
+// 微信的两个 code 和短信验证码不进访问日志。走一遍访问日志中间件，handler 拿到的请求原件不变。
+func TestAccessLogServer_RedactsWechatCodes(t *testing.T) {
+	const wxCode, phoneCode, smsCode = "wx-login-code-0a1B2c", "phone-code-9f8E7d", "482913"
+
+	cases := map[string]proto.Message{
+		"账号密码登录带 code": &authenticationV1.LoginRequest{
+			Identifier: &authenticationV1.LoginRequest_Username{Username: "zhangsan"},
+			ClientType: authenticationV1.ClientType_app.Enum(),
+			Code:       trans.Ptr(wxCode),
+		},
+		"一键登录": &authenticationV1.MiniappPhoneLoginRequest{Code: wxCode, PhoneCode: phoneCode},
+		"静默续期": &authenticationV1.MiniappSilentLoginRequest{Code: wxCode},
+		"验证改号验证码": &identityV1.VerifyContactRequest{Contact: &identityV1.VerifyContactRequest_Phone{
+			Phone: &identityV1.PhoneVerification{Phone: "13800000001", Code: smsCode},
+		}},
+	}
+	for name, req := range cases {
+		before := proto.Clone(req)
+		args, seen := runAccessLog(t, req)
+		for _, secret := range []string{wxCode, phoneCode, smsCode, "13800000001"} {
+			require.NotContains(t, args, secret, name)
+		}
+		require.True(t, proto.Equal(before, seen.(proto.Message)), "%s: handler 拿到的请求不能被改动", name)
+	}
+
+	// 其他字段照常记录。
+	args, _ := runAccessLog(t, cases["账号密码登录带 code"])
+	require.Contains(t, args, "zhangsan")
+
+	// phone_code 在字段名兜底名单里：哪怕以后有消息忘了写脱敏注解也不会漏。
+	require.True(t, sensitiveProtoField("phone_code"))
+	// code 不能进兜底名单：角色编码、字典编码等业务字段也叫 code。
+	require.False(t, sensitiveProtoField("code"))
+}

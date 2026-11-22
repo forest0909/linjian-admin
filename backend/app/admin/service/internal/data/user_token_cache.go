@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -202,6 +203,20 @@ var addTokenPairScript = redis.NewScript(`
 	return 1
 `)
 
+// addAppSessionScript 小程序签发：吊销版本没变才写入 access token 和会话元数据。
+// app 令牌只有 access token，没有 refresh token。两个键由同一个脚本写入，
+// 不会出现有令牌却查不到它用的是哪条绑定的情况。
+// KEYS: [atKey, usKey, rvKey]，ARGV: [at, sessionMeta, ttlMs, expectedVersion]。返回 1=已写入，0=版本已变。
+var addAppSessionScript = redis.NewScript(`
+	local ver = tonumber(redis.call('GET', KEYS[3]) or '0') or 0
+	if ver ~= tonumber(ARGV[4]) then
+		return 0
+	end
+	redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[3])
+	redis.call('SET', KEYS[2], ARGV[2], 'PX', ARGV[3])
+	return 1
+`)
+
 // ErrSessionRevoked 在途刷新期间会话已被吊销，新令牌没有写入。
 var ErrSessionRevoked = errors.New("session revoked during refresh")
 
@@ -286,6 +301,59 @@ func (r *UserTokenCache) AddTokenPairGuarded(
 	return nil
 }
 
+// GetRevokeVersion 读用户级吊销版本 rv:{ct}:{uid}，没有记录时是 0。
+// 小程序签发在认证之前读它，签发时用它做条件（见 AddAppSession）。
+func (r *UserTokenCache) GetRevokeVersion(ctx context.Context, clientType authenticationV1.ClientType, userId uint32) (int64, error) {
+	v, err := r.rdb.Get(ctx, r.makeRevokeVersionKey(clientType, userId)).Int64()
+	if errors.Is(err, redis.Nil) {
+		return 0, nil
+	}
+	if err != nil {
+		r.log.Errorf(ctx, "read revoke version failed for user [%d]: %v", userId, err)
+		return 0, err
+	}
+	return v, nil
+}
+
+// AddAppSession 写入小程序的 access token 和会话元数据，条件是吊销版本仍为 expectedVersion。
+// 版本变了（读版本之后该用户的 app 令牌被吊销过）返回 ErrSessionRevoked，什么都不写。
+// 会话元数据的 TTL 取 access token 的有效期。
+func (r *UserTokenCache) AddAppSession(
+	ctx context.Context,
+	userId uint32,
+	jti string,
+	accessToken string,
+	meta *SessionMeta,
+	expires time.Duration,
+	expectedVersion int64,
+) error {
+	if meta == nil {
+		meta = &SessionMeta{}
+	}
+	raw, err := json.Marshal(meta)
+	if err != nil {
+		r.log.Errorf(ctx, "marshal session meta failed for user [%d]: %v", userId, err)
+		return err
+	}
+	const ct = authenticationV1.ClientType_app
+	n, err := addAppSessionScript.Run(ctx, r.rdb,
+		[]string{
+			r.makeAccessTokenFieldKey(ct, userId, jti),
+			r.makeUserSessionKey(ct, userId, jti),
+			r.makeRevokeVersionKey(ct, userId),
+		},
+		accessToken, string(raw), expires.Milliseconds(), expectedVersion,
+	).Int64()
+	if err != nil {
+		r.log.Errorf(ctx, "add app session failed for user [%d] jti [%s]: %v", userId, jti, err)
+		return err
+	}
+	if n != 1 {
+		return ErrSessionRevoked
+	}
+	return nil
+}
+
 // AddAccessToken 添加访问令牌
 func (r *UserTokenCache) AddAccessToken(
 	ctx context.Context,
@@ -330,40 +398,48 @@ func (r *UserTokenCache) GetRefreshTokens(ctx context.Context, clientType authen
 	return r.scanValues(ctx, pattern)
 }
 
-// RevokeToken 移除所有令牌（含会话元数据）
+// RevokeToken 移除所有令牌（含会话元数据）。各步都会执行，错误汇总后返回：
+// 任何一步失败调用方都能看到，不会被后面成功的步骤盖掉。
 func (r *UserTokenCache) RevokeToken(ctx context.Context, clientType authenticationV1.ClientType, userId uint32) error {
-	var err error
+	var errs []error
 	// INCR 吊销版本就是全量吊销的原子生效点：此后已有 RT 的写入版本（rg）、宽限成员的版本
 	// 都对不上，消费脚本一律拒绝；在途刷新写新令牌时比对版本也失败。下面的逐项删除只是清理，
 	// 和刷新怎么交错都不会让会话复活。INCR 失败时仍尽力删除，但最终必须返回错误。
-	incrErr := r.rdb.Incr(ctx, r.makeRevokeVersionKey(clientType, userId)).Err()
-	if incrErr != nil {
-		r.log.Errorf(ctx, "bump revoke version failed for user [%d]: [%v]", userId, incrErr)
+	if err := r.rdb.Incr(ctx, r.makeRevokeVersionKey(clientType, userId)).Err(); err != nil {
+		r.log.Errorf(ctx, "bump revoke version failed for user [%d]: [%v]", userId, err)
+		errs = append(errs, err)
 	}
 
-	if err = r.RevokeUserAllAccessToken(ctx, clientType, userId); err != nil {
+	if err := r.RevokeUserAllAccessToken(ctx, clientType, userId); err != nil {
 		r.log.Errorf(ctx, "remove user access token failed: [%v]", err)
+		errs = append(errs, err)
 	}
 
-	if err = r.RevokeUserAllRefreshToken(ctx, clientType, userId); err != nil {
+	if err := r.RevokeUserAllRefreshToken(ctx, clientType, userId); err != nil {
 		r.log.Errorf(ctx, "remove user refresh token failed: [%v]", err)
-	}
-
-	// 会话元数据随令牌一并清理，保持「无令牌即无会话记录」的一致性
-	if err = r.DeleteUserSessionMetas(ctx, clientType, userId); err != nil {
-		r.log.Errorf(ctx, "remove user session metas failed: [%v]", err)
+		errs = append(errs, err)
 	}
 
 	// 宽限集合不在 rt:{ct}:{uid}:* 的扫描范围内。留下的话，全量吊销后
 	// 宽限期内的旧 RT 仍能换出新令牌。
-	if err = r.del(ctx, r.makeRefreshTokenGraceKey(clientType, userId)); err != nil {
+	if err := r.del(ctx, r.makeRefreshTokenGraceKey(clientType, userId)); err != nil {
 		r.log.Errorf(ctx, "remove user refresh token grace failed: [%v]", err)
+		errs = append(errs, err)
 	}
 
-	if incrErr != nil {
-		return incrErr
+	if len(errs) > 0 {
+		// 没做完：会话元数据留着，它是重试的入口。按会话下线（退出、踢会话、强制下线）要靠它
+		// 找到会话和它记着的绑定，重试时才会再走一遍全量吊销；先删掉的话，重试只能按 JTI 吊销
+		// 一个会话（或者直接 404），其余没删掉的令牌就留下了。和 RevokeTokenByJti 的做法一致。
+		return errors.Join(errs...)
 	}
-	return err
+
+	// 令牌都清干净了，再清会话元数据，保持「无令牌即无会话记录」的一致性
+	if err := r.DeleteUserSessionMetas(ctx, clientType, userId); err != nil {
+		r.log.Errorf(ctx, "remove user session metas failed: [%v]", err)
+		return err
+	}
+	return nil
 }
 
 // RevokeAccessToken 移除访问令牌
@@ -410,6 +486,11 @@ func (r *UserTokenCache) IsValidAccessToken(
 	storedToken, err := r.rdb.Get(ctx, key).Result()
 	if errors.Is(err, redis.Nil) {
 		return false, nil // 令牌不存在或已过期
+	}
+	if err != nil {
+		// Redis 读不出来不等于令牌失效：把错误交给调用方，不能当成「已吊销」。
+		r.log.Errorf(ctx, "read access token failed for user [%d]: %v", userId, err)
+		return false, err
 	}
 
 	if storedToken != uploadedToken {
@@ -615,44 +696,64 @@ func (r *UserTokenCache) AddTokenLineage(
 // RevokeTokenByJti 吊销指定会话（含其整条代际世系的 AT）。
 // 轮换不再删除旧 AT 后，仅删当前 jti 会漏掉同世系更早各代仍在 TTL 内的 AT；
 // 沿 lin: 链回溯逐代删除，恢复「踢即全灭」语义。环/断链由深度上限兜底。
+//
+// 各步都会执行，错误汇总后返回。可以重试：代际链和会话元数据是重试时找回整条世系的入口，
+// 只有前面各步全部成功才清掉；中途失败时它们留着，再调一次还能找到并删掉祖先各代的 AT。
 func (r *UserTokenCache) RevokeTokenByJti(ctx context.Context, clientType authenticationV1.ClientType, userId uint32, jti string) error {
-	var err error
-	// 先给本会话打踢下线标记：宽限 RT 和以它为父的在途刷新都会被拒。祖先在下面回溯时逐个标记。
-	if err = r.markKicked(ctx, clientType, userId, jti); err != nil {
-		r.log.Errorf(ctx, "mark kicked session failed: [%v]", err)
-	}
+	var errs []error
 
-	if err = r.RevokeAccessToken(ctx, clientType, userId, jti); err != nil {
-		r.log.Errorf(ctx, "remove user access token failed: [%v]", err)
-	}
-
-	if err = r.RevokeRefreshToken(ctx, clientType, userId, jti); err != nil {
-		r.log.Errorf(ctx, "remove user refresh token failed: [%v]", err)
-	}
-
-	if err = r.DeleteSessionMeta(ctx, clientType, userId, jti); err != nil {
-		r.log.Errorf(ctx, "remove user session meta failed: [%v]", err)
-	}
-
-	// 回溯代际链，删除祖先各代残留的 AT 与链节点
-	prev := jti
-	for i := 0; i < tokenLineageMaxDepth; i++ {
-		lineageKey := r.makeTokenLineageKey(clientType, userId, prev)
-		parent, err := r.rdb.GetDel(ctx, lineageKey).Result()
-		if err != nil || parent == "" {
+	// 先只读地走一遍代际链，收集整条世系（本会话在最前）。
+	lineage := []string{jti}
+	for prev := jti; len(lineage) <= tokenLineageMaxDepth; {
+		parent, err := r.rdb.Get(ctx, r.makeTokenLineageKey(clientType, userId, prev)).Result()
+		if err != nil {
+			// 链节点不存在是正常的终点；其他错误说明回溯没做完，祖先各代的 AT 可能还在。
+			if !errors.Is(err, redis.Nil) {
+				r.log.Errorf(ctx, "read token lineage failed: [%v]", err)
+				errs = append(errs, err)
+			}
 			break
 		}
-		// 祖先代的 RT 可能还在宽限集合里，打上标记后不能再兑换
-		if err = r.markKicked(ctx, clientType, userId, parent); err != nil {
-			r.log.Errorf(ctx, "mark kicked lineage session failed: [%v]", err)
+		if parent == "" || slices.Contains(lineage, parent) {
+			break
 		}
-		if err = r.RevokeAccessToken(ctx, clientType, userId, parent); err != nil {
-			r.log.Errorf(ctx, "remove lineage access token failed: [%v]", err)
-		}
+		lineage = append(lineage, parent)
 		prev = parent
 	}
 
-	return err
+	// 每一代：打踢下线标记（宽限 RT 和以它为父的在途刷新都会被拒），删 AT。
+	for _, id := range lineage {
+		if err := r.markKicked(ctx, clientType, userId, id); err != nil {
+			r.log.Errorf(ctx, "mark kicked session failed: [%v]", err)
+			errs = append(errs, err)
+		}
+		if err := r.RevokeAccessToken(ctx, clientType, userId, id); err != nil {
+			r.log.Errorf(ctx, "remove access token failed: [%v]", err)
+			errs = append(errs, err)
+		}
+	}
+
+	if err := r.RevokeRefreshToken(ctx, clientType, userId, jti); err != nil {
+		r.log.Errorf(ctx, "remove user refresh token failed: [%v]", err)
+		errs = append(errs, err)
+	}
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+
+	// 令牌都清干净了，再清重试入口：链节点和会话元数据。
+	for _, id := range lineage {
+		if err := r.del(ctx, r.makeTokenLineageKey(clientType, userId, id)); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := r.DeleteSessionMeta(ctx, clientType, userId, jti); err != nil {
+		r.log.Errorf(ctx, "remove user session meta failed: [%v]", err)
+		errs = append(errs, err)
+	}
+
+	return errors.Join(errs...)
 }
 
 // ==============================
@@ -871,6 +972,9 @@ type SessionMeta struct {
 	DeviceId  string `json:"dev,omitempty"`
 	// LoginAt 登录时间（unix 秒）。刷新轮换继承首次登录时间，不重置。
 	LoginAt int64 `json:"loginAt"`
+	// BindingID 小程序会话所用的微信绑定行 ID（sys_user_credentials.id）。下线时按它删绑定。
+	// H5 登录和没建成绑定的登录为 0；管理端会话没有这个字段。
+	BindingID uint32 `json:"bid,omitempty"`
 }
 
 // SessionEntry 一次会话扫描得到的完整条目（键定位信息 + 元数据）。

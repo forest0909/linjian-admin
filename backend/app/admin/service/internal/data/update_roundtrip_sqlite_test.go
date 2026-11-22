@@ -578,6 +578,8 @@ func TestRepoUpdateRoundTrip(t *testing.T) {
 				"org_unit_names": "读侧回填",
 				"position_names": "读侧回填",
 			},
+			// 手机号是登录凭证，Update 只接受中国大陆 11 位号码。
+			values: func() map[string]any { return map[string]any{"mobile": "13800000001"} },
 		},
 	}
 

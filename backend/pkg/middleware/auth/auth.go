@@ -2,6 +2,9 @@ package auth
 
 import (
 	"context"
+	"net/http"
+
+	kratosErrors "github.com/go-kratos/kratos/v2/errors"
 
 	"github.com/go-kratos/kratos/v2/middleware"
 	"github.com/go-kratos/kratos/v2/transport"
@@ -54,10 +57,23 @@ func Server(opts ...Option) middleware.Middleware {
 			}
 
 			var tokenPayload *authenticationV1.UserTokenPayload
-			var valid bool
-			if valid, tokenPayload = op.accessTokenChecker.IsValidAccessToken(ctx, token, false); !valid {
-				op.log.Errorf(ctx, "auth middleware: invalid access token")
-				return nil, ErrAccessTokenExpired
+			if verifier, ok := op.accessTokenChecker.(AccessTokenVerifier); ok {
+				// 能给出失败原因的检查器：区分令牌存储故障（503）和令牌确实失效（401）。
+				var verr error
+				if tokenPayload, verr = verifier.VerifyAccessToken(ctx, token); verr != nil || tokenPayload == nil {
+					if verr != nil && kratosErrors.FromError(verr).GetCode() == http.StatusServiceUnavailable {
+						op.log.Errorf(ctx, "auth middleware: token store unavailable: %v", verr)
+						return nil, ErrTokenStoreUnavailable
+					}
+					op.log.Errorf(ctx, "auth middleware: invalid access token: %v", verr)
+					return nil, ErrAccessTokenExpired
+				}
+			} else {
+				var valid bool
+				if valid, tokenPayload = op.accessTokenChecker.IsValidAccessToken(ctx, token, false); !valid {
+					op.log.Errorf(ctx, "auth middleware: invalid access token")
+					return nil, ErrAccessTokenExpired
+				}
 			}
 			// 单租户：只接受 tid=0 的令牌。令牌校验实现（Authenticator）已拒绝，这里再挡一次，
 			// 防止换了校验实现后旧租户会话带着非零租户进入 viewer。
