@@ -45,7 +45,7 @@ X-Captcha-Value: 7k4p
 
 - 验证码、登录限流、口令策略和管理端完全一样。
 - 带 `code`（微信环境）时顺带写入绑定，响应里 `miniapp_bound` 表示绑定是否落库。绑定失败不挡登录，降级为 `miniapp_bound=false`；只有确认这个微信已绑别的账号时才拒绝登录。
-- H5 不带 `code`，`miniapp_bound` 恒为 `false`。
+- H5 不带 `code`，`miniapp_bound` 恒为 `false`。开了前端 mock 的 H5 是例外（见 3.2）：它会带上 mock code，行为和小程序一样。
 - 响应没有 `Set-Cookie`，app 令牌只有 access token，没有 refresh token。
 
 ### 1.3 静默续期
@@ -122,13 +122,15 @@ make -C app/admin/service run-miniapp-mock   # 带 miniapp_mock 编译标签；w
   | `phoneCode = mock_phone_<号码>` | 区号 86 加该号码 |
   | 其他 | 按 code 无效处理（`MINIAPP_CODE_INVALID`） |
 
+  管理端的绑定列表只显示 openid 的前 6 后 4。mock 的 openid 很短，会整串显示成 `*`，按绑定时间区分。
+
 - 编译检查：`go build -tags miniapp_mock ./...`。
 
 ### 3.2 小程序前端
 
 ```bash
 # frontend/miniapp/
-npm run dev:h5            # H5 devServer，/admin 代理到 :7788
+npm run dev:h5            # H5 devServer，端口 15889，/admin 代理到 :7788
 npm run dev:mp-weixin     # 监听编译到 dist/weapp，用微信开发者工具打开 project.config.json
 npm run build:mp-weixin   # 产物 dist/weapp
 npm run build:h5          # 产物 dist/h5
@@ -139,6 +141,15 @@ npm run build:h5          # 产物 dist/h5
 | `TARO_APP_API_BASE` | 后端地址。H5 留空，用同源相对路径 |
 | `TARO_APP_AES_KEY` | 口令传输密钥，和管理端 `VITE_AES_KEY` 相同。它会打进前端包，视为公开，传输保密靠生产 HTTPS |
 | `TARO_APP_WECHAT_MOCK` | 开发用。**生产构建里为 `true` 时构建直接失败** |
+
+后端不在 7788 端口时用 `DEV_PROXY_TARGET` 指定：`DEV_PROXY_TARGET=http://localhost:端口 npm run dev:h5`。
+
+**H5 加前端 mock。** `TARO_APP_WECHAT_MOCK=true npm run dev:h5`（配合 3.1 的后端 mock 构建）。打开后：
+
+- 登录页默认是一键登录，多一个手机号输入框，填后台已有用户的手机号即可登录；可切到账号密码。
+- `wx.login` 的 code 固定是 `mock_openid_dev`，所以这个浏览器始终是同一个「微信」。它绑定到某个用户之后，再用它登录别的用户会得到 `MINIAPP_BOUND_TO_OTHER`，要先退出登录或在管理端解绑。
+- 账号密码登录也会带上这个 code 并写入绑定，`miniapp_bound` 为 `true`。
+- 令牌失效后会静默续期，和小程序里一样。不开 mock 的 H5 没有绑定，令牌失效直接回登录页。
 
 登录账号：全新环境是 `admin / Abcd@1234`（图形验证码答案可在 Redis 里按 `gowind:captcha:<captchaId>` 读）。
 
@@ -250,17 +261,20 @@ curl -s -X POST localhost:7788/admin/v1/miniapp/login/silent \
 
 ### 9.1 本地：H5 加 mock 后端
 
-没有真实 AppID 时的验证范围。后端用 `make -C app/admin/service run-miniapp-mock`，前端用 `npm run dev:h5`。
+没有真实 AppID 时的验证范围。后端用 `make -C app/admin/service run-miniapp-mock`，前端用 `npm run dev:h5`。第 1 到 4 步开不开前端 mock 都可以，区别见第 4 步；要在浏览器里看一键登录、静默续期、解绑和强制下线之后回登录页，用 `TARO_APP_WECHAT_MOCK=true npm run dev:h5`（见 3.2）。改密码那一步会改掉账号的密码，共用环境里另建一个测试账号来做。
 
 1. 用 `admin / Abcd@1234` 加验证码登录，进首页。
 2. 「我的」显示用户信息；换头像；改密码后回到登录页。
 3. 退出登录回到登录页；此时管理端的登录没有被踢。
-4. 把本地 token 改坏后发请求，回到登录页。
+4. 把本地 token 改坏后发请求，回到登录页。会话存在 localStorage 的 `linjian.miniapp.session` 里，形状是 `{"data":{"token":"…","bound":false}}`。
+   - 开了前端 mock 时登录后 `bound` 是 `true`，改坏 token 后会静默续期成功、留在原页面。要看到回登录页，把 `bound` 一起改成 `false`。
+   - 模拟令牌过期：删掉 Redis 里这枚令牌的键 `at:1:<用户 ID>:<jti>`（`1` 是 app 客户端，`jti` 在令牌载荷里），下一次请求会 401 并静默续期，页面不跳转，本地令牌换成新的。
 5. curl 调一键登录，传 `mock_openid_x` 和 `mock_phone_<某用户手机号>`，拿到 token 且 `miniapp_bound` 为 `true`；再调静默续期拿到新 token。
 6. 换一个没人用的号码得到 `MINIAPP_PHONE_NOT_REGISTERED`；用同一个 openid 登录另一个用户得到 `MINIAPP_BOUND_TO_OTHER`。
 7. 管理端用户详情页看到绑定；解绑后静默续期得到 `MINIAPP_NOT_BOUND`。
    - 补充：模拟解绑时 DELETE 返回 503（绑定已删、Redis 吊销失败）→ 重新 GET 绑定列表为空 → 页面的「重试解绑」再发同一个 DELETE，返回成功，旧 app 令牌随后被拒。
-   - 补充：只有 `user:view`、没有 `user:delete` 的角色能看到绑定列表，看不到「解绑」按钮。
+   - 补充：只有 `user:view`、没有 `user:delete` 的角色能看到绑定列表，看不到「解绑」按钮。这个角色还要有用户详情页的菜单才打得开页面；没有菜单时可以直接调接口验：GET 返回 200，DELETE 返回 403。
+   - 补充：同一用户有两条绑定时，解绑其中一条后，另一条仍能静默续期。
 8. 重新一键登录后，在管理端「在线用户」强制下线这个 `app` 会话，静默续期被拒。
 9. 管理端个人中心：资料页手机号只读；「账号绑定」页在没配短信时显示找管理员代改的提示。
 
