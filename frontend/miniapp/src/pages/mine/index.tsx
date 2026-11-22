@@ -36,6 +36,12 @@ export default function Mine() {
 
   const displayName = user?.nickname || user?.realname || user?.username || ''
 
+  // NutUI 的 Avatar 同时给了 src 和 children 时两个都渲染，图片会被首字母挤偏。
+  // 所以有图只给图，没图或图加载失败（文件已不在存储里）才给首字母。
+  const avatar = avatarSrc(user?.avatar)
+  const [brokenAvatar, setBrokenAvatar] = useState('')
+  const showImage = avatar !== '' && avatar !== brokenAvatar
+
   async function onChangeAvatar() {
     if (uploading) {
       return
@@ -100,8 +106,14 @@ export default function Mine() {
   return (
     <View className='mine'>
       <View className='mine__header' onClick={onChangeAvatar}>
-        <Avatar size='64' src={avatarSrc(user?.avatar)} background='#006be6' color='#ffffff'>
-          {displayName.slice(0, 1)}
+        <Avatar
+          size='64'
+          src={showImage ? avatar : ''}
+          background='#006be6'
+          color='#ffffff'
+          onError={() => setBrokenAvatar(avatar)}
+        >
+          {showImage ? null : displayName.slice(0, 1)}
         </Avatar>
         <View className='mine__header-text'>
           <Text className='mine__name'>{displayName || '未登录'}</Text>
