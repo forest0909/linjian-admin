@@ -1,0 +1,28 @@
+// 主色和管理端一致（docs/design-language.md）。
+page,
+:root {
+  --nutui-color-primary: #006be6;
+  --nutui-color-primary-stop-1: #006be6;
+  --nutui-color-primary-stop-2: #006be6;
+  --nutui-color-primary-pressed: #0058bf;
+  --nutui-color-primary-text: #ffffff;
+}
+
+// 页面底色写在各页面的根节点上（H5 下 page 选择器不生效）。
+page {
+  color: #1f2329;
+  font-size: 28px;
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Helvetica Neue', sans-serif;
+}
+
+/*  #ifdef  h5  */
+// H5 下 Taro 把每个页面放进一个 z-index: 0 的层叠上下文，而底部 tabBar 是 z-index: 500，
+// 页面里的弹层（Popup、Dialog、遮罩）z-index 再高也盖不住 tabBar。
+// 把页面容器抬到 tabBar 之上：页面本身不和 tabBar 重叠，只有 fixed 定位的弹层会盖过去。
+// 所有页面一起抬（不只是 tab 页），页面栈里后进的页面仍然靠 DOM 顺序盖住先进的。
+// 选择器前面加 body 是为了压过 Taro 运行时注入的 `.taro_router > .taro_page { z-index: 0 }`。
+// 小程序的 tabBar 是原生的，没有这个问题。
+body .taro_router > .taro_page {
+  z-index: 501;
+}
+/*  #endif  */

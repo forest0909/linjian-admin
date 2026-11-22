@@ -1,0 +1,29 @@
+name: miniapp
+
+on:
+  pull_request:
+    paths:
+      - 'frontend/miniapp/**'
+      - '.github/workflows/miniapp.yml'
+
+jobs:
+  miniapp:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/miniapp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npx -y pnpm@12.16.1 install --frozen-lockfile
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build:mp-weixin
+      - run: test -f dist/weapp/app.json
+      - run: npm run build:h5
+      - run: test -f dist/h5/index.html
+      # 两端开着微信 mock 的构建必须被 config/index.ts 拦下（校验报错文案），产物里不能有 mock 标记
+      - run: bash scripts/check-mock-guard.sh
