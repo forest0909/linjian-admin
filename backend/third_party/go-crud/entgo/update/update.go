@@ -104,30 +104,57 @@ func ExtractJsonFieldKeyValues(msg proto.Message, paths []string, needToSnakeCas
 			k = path
 		}
 
-		keyValues = append(keyValues, fmt.Sprintf("'%s'", escapeSQLLiteral(k)))
-
-		v := rft.Get(fd)
-		switch t := v.Interface().(type) {
-		case int32:
-			keyValues = append(keyValues, strconv.FormatInt(int64(t), 10))
-		case int64:
-			keyValues = append(keyValues, strconv.FormatInt(t, 10))
-		case uint32:
-			keyValues = append(keyValues, strconv.FormatUint(uint64(t), 10))
-		case uint64:
-			keyValues = append(keyValues, strconv.FormatUint(t, 10))
-		case float32:
-			keyValues = append(keyValues, strconv.FormatFloat(float64(t), 'f', -1, 32))
-		case float64:
-			keyValues = append(keyValues, strconv.FormatFloat(t, 'f', -1, 64))
-		case bool:
-			keyValues = append(keyValues, strconv.FormatBool(t))
-		case string:
-			keyValues = append(keyValues, fmt.Sprintf("'%s'", escapeSQLLiteral(t)))
+		var value string
+		var ok bool
+		if fd.IsList() {
+			value, ok = jsonArrayLiteral(rft.Get(fd).List())
+		} else if !fd.IsMap() {
+			value, ok = jsonScalarLiteral(rft.Get(fd).Interface())
 		}
+		// 不支持的类型（map、嵌套消息）连键一起跳过：只追加键会让 jsonb_build_object 参数成奇数
+		if !ok {
+			continue
+		}
+		keyValues = append(keyValues, fmt.Sprintf("'%s'", escapeSQLLiteral(k)), value)
 	}
 
 	return keyValues
+}
+
+// jsonScalarLiteral 把标量字段值写成 SQL 字面量，类型不支持时返回 false。
+func jsonScalarLiteral(v any) (string, bool) {
+	switch t := v.(type) {
+	case int32:
+		return strconv.FormatInt(int64(t), 10), true
+	case int64:
+		return strconv.FormatInt(t, 10), true
+	case uint32:
+		return strconv.FormatUint(uint64(t), 10), true
+	case uint64:
+		return strconv.FormatUint(t, 10), true
+	case float32:
+		return strconv.FormatFloat(float64(t), 'f', -1, 32), true
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64), true
+	case bool:
+		return strconv.FormatBool(t), true
+	case string:
+		return fmt.Sprintf("'%s'", escapeSQLLiteral(t)), true
+	}
+	return "", false
+}
+
+// jsonArrayLiteral 把标量列表写成 jsonb_build_array(...)，元素类型不支持时返回 false。
+func jsonArrayLiteral(list protoreflect.List) (string, bool) {
+	items := make([]string, 0, list.Len())
+	for i := 0; i < list.Len(); i++ {
+		item, ok := jsonScalarLiteral(list.Get(i).Interface())
+		if !ok {
+			return "", false
+		}
+		items = append(items, item)
+	}
+	return fmt.Sprintf("jsonb_build_array(%s)", strings.Join(items, ",")), true
 }
 
 // SetJsonNullFieldUpdateBuilder 设置json字段的空值
@@ -169,6 +196,33 @@ func SetJsonFieldValueUpdateBuilder(fieldName string, msg proto.Message, paths [
 				fmt.Sprintf("\"%s\" || jsonb_build_object(%s)", safeField, strings.Join(keyValues, ",")),
 			),
 		)
+	}
+}
+
+// SetJsonFieldUpdateBuilder 按 paths 改 JSON 列里的键：msg 里有值的键写入，没值的键删除。
+// 两件事合成一条 SET：分别调 SetJsonNullFieldUpdateBuilder 和 SetJsonFieldValueUpdateBuilder
+// 会对同一列 SET 两次，PostgreSQL 报 multiple assignments to same column。
+// 列为 NULL 时按空对象处理，否则 NULL || jsonb 仍是 NULL，更新不生效。
+func SetJsonFieldUpdateBuilder(fieldName string, msg proto.Message, paths []string, needToSnakeCase bool) func(u *sql.UpdateBuilder) {
+	if !validateIdentifier(fieldName) {
+		return nil
+	}
+	nilPaths := fieldmaskutil.NilValuePaths(msg, paths)
+	keyValues := ExtractJsonFieldKeyValues(msg, paths, needToSnakeCase)
+	if len(nilPaths) == 0 && len(keyValues) == 0 {
+		return nil
+	}
+
+	safeField := escapeSQLIdentifier(fieldName)
+	expr := fmt.Sprintf("COALESCE(\"%s\", '{}'::jsonb)", safeField)
+	if len(nilPaths) > 0 {
+		expr = fmt.Sprintf("(%s - '{%s}'::text[])", expr, strings.Join(nilPaths, ","))
+	}
+	if len(keyValues) > 0 {
+		expr = fmt.Sprintf("%s || jsonb_build_object(%s)", expr, strings.Join(keyValues, ","))
+	}
+	return func(u *sql.UpdateBuilder) {
+		u.Set(safeField, sql.Expr(expr))
 	}
 }
 

@@ -5,6 +5,8 @@ export interface LayoutMenuNode {
   path?: string;
   name?: string;
   icon?: string;
+  /** 目录开了隐藏子菜单：子项已从 children 里拿掉，子页面归到这一项 */
+  hideChildrenInMenu?: boolean;
   children?: LayoutMenuNode[];
 }
 
@@ -25,6 +27,32 @@ export const findActiveRootMenu = (
   return menuData
     .filter((root) => root.path && pathname.startsWith(`${root.path}/`))
     .sort((a, b) => (b.path?.length ?? 0) - (a.path?.length ?? 0))[0];
+};
+
+/**
+ * 当前页（或 activePath）在侧栏里对应哪一项。
+ * 菜单里有这条路径就是它自己；没有时，如果它落在某个隐藏了子菜单的目录下面，归到这个目录（取最深的一个）。
+ * 都不是就原样返回，保持以前的行为。
+ */
+export const resolveMenuKey = (menuData: LayoutMenuNode[], target: string): string => {
+  let owner: string | undefined;
+  const walk = (nodes: LayoutMenuNode[]): boolean => {
+    for (const node of nodes) {
+      if (node.path === target) return true;
+      if (
+        node.hideChildrenInMenu &&
+        node.path &&
+        target.startsWith(`${node.path}/`) &&
+        node.path.length > (owner?.length ?? 0)
+      ) {
+        owner = node.path;
+      }
+      if (node.children && walk(node.children)) return true;
+    }
+    return false;
+  };
+  if (walk(menuData)) return target;
+  return owner ?? target;
 };
 
 /** 点击一级菜单时的跳转目标：第一个叶子，避免停在没有页面的目录上 */

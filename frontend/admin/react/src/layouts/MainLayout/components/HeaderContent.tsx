@@ -269,7 +269,7 @@ export const HeaderContent = ({
   const breadcrumbItems = useMemo(() => {
     type MatchWithHandle = {
       pathname: string;
-      handle?: { title?: string; icon?: string };
+      handle?: { title?: string; icon?: string; hideInBreadcrumb?: boolean };
       id?: string; // React Router 内部 ID，用于识别 index 路由
     };
     const typedMatches = matches as MatchWithHandle[];
@@ -280,6 +280,7 @@ export const HeaderContent = ({
       .filter((match, index, all) => {
         // 过滤掉没有 title 的路由
         if (!match.handle?.title) return false;
+        if (match.handle.hideInBreadcrumb) return false;
 
         // 一级单页的外层和它的 index 子路由是同一页，只留子路由这一项
         const next = all[index + 1];

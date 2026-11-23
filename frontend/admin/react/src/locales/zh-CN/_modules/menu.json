@@ -1,5 +1,5 @@
 {
-  "hideInMenuSyncHint": "保存后重新登录或刷新页面生效；下次菜单同步会以代码路由的隐藏设置覆盖此值。",
+  "hideInMenuSyncHint": "保存后重新登录或刷新页面生效。菜单同步只补充缺少的设置，不会覆盖在此页面修改过的值。",
   "pageTitle": "菜单管理",
   "moduleName": "菜单",
   "serial": "序号",
@@ -21,6 +21,9 @@
   "iconPlaceholder": "请输入图标名称",
   "path": "路由路径",
   "pathPlaceholder": "请输入路由路径",
+  "activePath": "激活菜单",
+  "activePathPlaceholder": "例如 /map",
+  "activePathHint": "打开本页时高亮哪个菜单，用于不在菜单里显示的下钻页；留空则高亮本页。清空后，下次菜单同步会用代码路由里的值补回。",
   "component": "组件路径",
   "componentPlaceholder": "请输入组件路径",
   "authority": "权限标识",
